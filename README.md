@@ -86,7 +86,8 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 - 托盘程序：WinForms（`UseWindowsForms`）
 - 主进程隐藏窗口：WinForms `NativeWindow` 承载消息循环
 - 配置界面：内嵌 ASP.NET Core Web 服务（Kestrel + 最小 API），仅绑定 `127.0.0.1`
-- 设备信息采集：Win32 前台窗口 API（`GetForegroundWindow` / `GetWindowThreadProcessId`）与系统空闲时间（`GetLastInputInfo`）
+- 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
+- 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
 - 启动方式：计划任务（登录触发）拉起主进程
 
 > 本项目的 SDK 版本与 ClassIsland-Misha 插件保持一致，便于共用同一套 .NET 10 工具链。
@@ -97,15 +98,45 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ```jsonc
 {
-  "server_url": "https://sleepy.example.com", // sleepy 服务端地址
-  "secret": "",                               // 与服务端 SLEEPY_SECRET 一致
-  "device_id": "device-1",                    // 对应 API 的 id
-  "show_name": "MyDevice",                    // 页面显示的设备名称
-  "interval": 30                              // 上报间隔（秒）
+  "reportingEnabled": true,            // 开始 / 停止上报
+  "remote": {
+    "serverUrl": "https://sleepy.example.com",
+    "secret": "",
+    "deviceId": "device-1",
+    "showName": "MyDevice"
+  },
+  "report": {
+    "intervalSeconds": 5,              // 上报间隔（秒）
+    "onlyOnChange": true,              // 不重复上报：仅状态变化时发送
+    "statusFormat": "window",          // process | window | window+process | process+window
+    "smtcMode": "idle",                // off | idle
+    "idleTimeoutSeconds": 120,         // 0 表示禁用待机判定
+    "controllerEnabled": false,
+    "controllerAll": false,
+    "controllerDeadzone": 0.10,
+    "portableMode": false
+  },
+  "texts": {
+    "shutdown": "设备关闭",
+    "batteryOnBattery": "未在充电 %battery%",
+    "batteryOnAc": "正在充电 %battery%"
+  }
 }
 ```
 
-字段名称以实际实现为准。`config.json` 中含 `secret`，**不纳入版本控制**，已加入 `.gitignore`。
+`config.json` 中含 `secret`，**不纳入版本控制**，已加入 `.gitignore`。
+
+### 状态判定与上报规则
+
+| 情形 | `using` | `status` |
+| --- | --- | --- |
+| 有键鼠或控制器输入 | `true` | 按「上报形式」拼接的前台信息 |
+| 超过超时时间无输入（待机） | `false` | 保留最后一次前台信息；若 SMTC 正在播放则用播放信息覆盖；便携模式下用电池文案 |
+| 收到关机 / 注销信号 | `false` | 「设备关机时」文案（默认 `设备关闭`），**不删除设备** |
+
+- 前台信息按「上报形式」拼接：`窗口名`、`进程名`、`窗口名 (进程名)`、`进程名 (窗口名)`。
+- SMTC 只认网易云音乐与 QQ 音乐，其他播放器忽略；文案形如 `网易云音乐 - 歌曲名`。
+- 关机时调用 `/api/device/set` 置为离线，不调用 `/api/device/remove`，设备仍留在页面上。
 
 ### 配置文件由程序自举
 
@@ -113,34 +144,61 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 这样做的意义是把「谁先启动」的依赖彻底去掉：主进程先起来会创建它，托盘先起来也会创建它，两者不会因为对方没跑而卡住。写入需要幂等 —— 已存在时不覆盖用户配置，只在缺失或损坏时重建。
 
+损坏的配置不会静默覆盖，会先重命名为 `config.json.invalid-<时间戳>` 再重建，避免手写配置时一个笔误就把数据冲掉。
+
 因为不做安装程序，发布形态就是一个便携目录：两个可执行文件放在一起，`config.json` 首次运行时自动出现在旁边。
 
-## 仓库结构（规划）
+## 仓库结构
 
 ```
 UpDevice/
 ├── src/
-│   ├── UpDevice.Service/       # 主进程：采集 + 上报 + 隐藏窗口
-│   │   ├── Program.cs
-│   │   ├── Native/             # 隐藏窗口、系统消息、Win32 封装
-│   │   ├── Capture/            # 前台窗口与空闲状态采集
-│   │   └── Reporting/          # sleepy API 客户端
-│   └── UpDevice.Tray/          # 托盘 + 本地 Web 配置
+│   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口（已完成）
+│   │   ├── Program.cs             # 入口、单实例、指令分发
+│   │   ├── Logging.cs             # 文件 + 控制台日志
+│   │   ├── Config/                # config.json 模型、自举、热重载
+│   │   ├── Native/                # Win32 封装、隐藏窗口
+│   │   ├── Capture/               # 前台窗口、空闲、控制器、电池
+│   │   ├── Media/                 # SMTC 播放信息
+│   │   └── Reporting/             # sleepy 客户端与上报循环
+│   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置（待实现）
 │       ├── Program.cs
-│       ├── Web/                # 最小 API 与配置页
-│       └── Ipc/                # 与主进程通信
+│       ├── Web/                   # 最小 API 与配置页
+│       └── Ipc/                   # 与主进程通信
 ├── UpDevice.sln
 ├── LICENSE
 └── README.md
 ```
 
-## 构建
+## 构建与运行
 
 需要 .NET 10 SDK：
 
 ```bash
 dotnet build UpDevice.sln
 ```
+
+调试用的两个开关：
+
+```bash
+# 采一轮就退出，打印前台窗口、空闲时长、电池、SMTC 与将要上报的内容
+dotnet run --project src/UpDevice.Service -- --once
+
+# 正常循环运行，但不真正发请求，只把要上报的内容写进日志
+dotnet run --project src/UpDevice.Service -- --dry-run
+```
+
+日志写在程序目录下的 `logs/updevice-yyyyMMdd.log`，同时输出到控制台。
+
+### 与托盘程序的指令通道
+
+主进程持有一个隐藏窗口，标题固定为 `UpDevice.Service.Hidden`。托盘找到它后通过 `WM_COPYDATA` 发送指令：
+
+| 指令 | 作用 |
+| --- | --- |
+| `reload` | 重新读取 config.json |
+| `shutdown-report` | 立即上报离线（等同收到关机信号） |
+| `exit` | 退出主进程 |
 
 ## 发布
 
@@ -168,14 +226,16 @@ docs: 更新使用说明
 
 ## 路线图
 
-- [ ] 建立解决方案骨架（`UpDevice.sln` + 两个项目）
-- [ ] 前台窗口与应用名采集
-- [ ] 空闲状态判定（是否正在使用）
-- [ ] sleepy 上报客户端（含鉴权与重试）
-- [ ] `config.json` 自举（缺失时创建默认配置）、读写与热重载
-- [ ] 主进程隐藏窗口：接收关机消息与 IPC
-- [ ] 托盘常驻与菜单（启停、打开配置页、退出）
-- [ ] 本地 Web 配置服务（仅回环）+ 配置页与「测试连接」
+- [x] 建立解决方案骨架（`UpDevice.sln` + 主程序项目）
+- [x] 前台窗口 / 窗口标题 / 窗口类名采集
+- [x] 空闲状态判定（键鼠 + 控制器，超时转离线）
+- [x] 控制器输入采集（XInput，死区可配）
+- [x] 便携式设备模式（电池与电源状态）
+- [x] SMTC 播放信息（网易云音乐 / QQ 音乐）
+- [x] sleepy 上报客户端（鉴权、去重、关机离线）
+- [x] `config.json` 自举与热重载
+- [x] 主进程隐藏窗口（关机消息 + 指令通道）
+- [ ] 托盘程序：常驻、菜单、本地 Web 配置页
 - [ ] 计划任务开机自启
 
 ## 相关链接
