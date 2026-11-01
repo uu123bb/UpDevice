@@ -1,0 +1,14 @@
+<Project>
+
+  <PropertyGroup>
+    <!--
+      版本号：Major.Second.Patcher1.Patcher2，例如 1.1.0.0
+        本地构建用这里的值；CI 会用标签覆盖（标签同样不带 v）。
+      四段式，比较时用 System.Version（1.1.0.1 > 1.1.0.0 直接成立）。
+    -->
+    <Version>1.1.0.0</Version>
+    <Product>UpDevice</Product>
+    <Company>uu123bb</Company>
+  </PropertyGroup>
+
+</Project>

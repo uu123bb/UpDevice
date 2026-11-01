@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -95,6 +96,7 @@ internal sealed class TrayWebHost
             autostartEnabled = Autostart.IsEnabled(),
             serviceRunning = Ipc.IsServiceRunning,
             url = Url,
+            currentVersion = AppVersion.CurrentText,
         }));
 
         application.MapGet("/api/config", () => Results.Json(_store.Current));
@@ -194,6 +196,73 @@ internal sealed class TrayWebHost
             }
 
             return Results.Json(new { ok = true, message, serverUrl });
+        });
+
+        // 只检查不安装：下载与替换文件由启动器负责。
+        application.MapPost("/api/update/check", async () =>
+        {
+            var result = await UpdateChecker.CheckAsync(_store.Current.Update.Repository, CancellationToken.None);
+            return Results.Json(result);
+        });
+
+        // 下载交给托盘（只有它能显示进度），替换目录交给启动器（只有它在 UpDevice/ 外面）。
+        application.MapPost("/api/update/install", async () =>
+        {
+            var check = await UpdateChecker.CheckAsync(_store.Current.Update.Repository, CancellationToken.None);
+            if (!check.Ok)
+            {
+                return Results.Json(new { ok = false, message = check.Message });
+            }
+
+            if (!check.HasUpdate)
+            {
+                return Results.Json(new { ok = false, message = "已经是最新版本" });
+            }
+
+            var launcher = AppPaths.LauncherPath;
+            if (!File.Exists(launcher))
+            {
+                return Results.Json(new { ok = false, message = "未找到 UpDevice.Launcher.exe，无法自动安装更新" });
+            }
+
+            string zipPath;
+            try
+            {
+                zipPath = await UpdateInstaller.DownloadAsync(check, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, message = $"下载失败：{ex.GetBaseException().Message}" });
+            }
+
+            try
+            {
+                var startInfo = new ProcessStartInfo(launcher)
+                {
+                    UseShellExecute = false,
+                    WorkingDirectory = Path.GetDirectoryName(launcher)!,
+                };
+                startInfo.ArgumentList.Add("--apply-update");
+                startInfo.ArgumentList.Add(zipPath);
+                startInfo.ArgumentList.Add("--version");
+                startInfo.ArgumentList.Add((check.LatestVersion ?? string.Empty).TrimStart('v', 'V'));
+
+                Process.Start(startInfo);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, message = $"启动更新程序失败：{ex.GetBaseException().Message}" });
+            }
+
+            // 让主进程上报离线后退出；本进程也退，把 UpDevice/ 让出来给启动器替换。
+            Ipc.SendCommand("stop-and-exit");
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000);
+                Environment.Exit(0);
+            });
+
+            return Results.Json(new { ok = true, message = "开始更新，程序将退出并在完成后自动重启" });
         });
     }
 

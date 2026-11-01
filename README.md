@@ -16,6 +16,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 | 项目 | 角色 | 职责 |
 | --- | --- | --- |
+| `UpDevice.Launcher` | 启动器 | 无窗口入口：拉起托盘；被调用时替换 `UpDevice/` 目录完成更新 |
 | `UpDevice.Service` | 主进程 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
 | `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制主进程启停、展示上报状态 |
 
@@ -60,6 +61,36 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
         UpDevice.Tray  ◀────── 浏览器访问 127.0.0.1:port 修改配置
 ```
 
+## 启动器
+
+`UpDevice.Launcher.exe` 是个**入口，不是独立程序** —— 没有窗口，跑完就退出。两种调用：
+
+| 调用 | 行为 |
+| --- | --- |
+| `UpDevice.Launcher.exe` | 找根目录下版本最高的 `app-*` 目录，跑里面的托盘，然后退出 |
+| `... --apply-update <zip> [--version x.y.z]` | 解压成新的 `app-<版本>-<序号>` 目录 → 结束旧进程 → 切过去 → 重启托盘 → 清理旧目录 |
+
+更新由托盘触发（网页「自动更新」页的「立即更新」）：
+
+```
+托盘：检查 releases/latest → 下载 zip 到 data/Cache/Update → 校验 SHA256
+  → 启动 UpDevice.Launcher.exe --apply-update <zip> --version <新版本>
+  → 自己退出（先让主进程上报离线）
+
+启动器：解压成 app-<新版本>-0/（失败不影响正在运行的旧版本）
+  → 通知主进程上报离线并退出，等托盘与主进程结束（超时强杀）
+  → 目录改名就位
+  → 启动新版本托盘 → 删除其他旧版本目录
+```
+
+新解压出来的目录还没接管之前，旧版本一直正常服务 —— 这是版本化目录相对「原地替换」最大的好处。
+
+因为新旧版本各在各的目录里，删除正在运行的目录会失败，所以清理放在启动新版本之后，删不掉只记一条警告，下次更新再试。
+
+要求管理员权限：写入程序目录以及拉起同样提权的托盘都需要，一次 UAC 之后不再弹。
+
+**已知限制**：启动器自身不参与自动更新 —— 更新包里虽然带着新的启动器，但只取其中的 `app-*` 目录，启动器本身只有手动替换才会升级。
+
 ## 与 sleepy 服务端的对接
 
 sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`，通得过就是 V4；否则再试 `/api/status/query`，通得过就是 V5。识别结果会缓存，中途发现 404 会自动换另一套重试。
@@ -103,11 +134,11 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 
 ## 配置
 
-配置内容由托盘程序维护，主进程只读取（文件缺失时按默认值创建，见下）。文件位于**两个程序所在的同一目录**下，名为 `config.json`：
+配置内容由托盘程序维护，主进程只读取（文件缺失时按默认值创建，见下）。文件位于 `data/Config/config.json`（开发构建时退回程序目录）：
 
 ```jsonc
 {
-  "version": 2,                        // 配置结构版本，旧版本会自动升级
+  "version": 3,                        // 配置结构版本，旧版本会自动升级
   "reportingEnabled": true,            // 开始 / 停止上报
   "remote": {
     "serverUrl": "https://sleepy.example.com",
@@ -131,6 +162,11 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
     "showName": "",
     "pendingRemoveId": ""              // 内部字段：待删除的旧 SMTC 设备
   },
+  "update": {                          // v3 新增
+    "enabled": true,                   // 自动检查更新
+    "intervalHours": 6,                // 检查间隔（GitHub 匿名接口每小时 60 次）
+    "repository": "uu123bb/UpDevice"   // 更新源
+  },
   "texts": {
     "shutdown": "设备关闭",
     "batteryOnBattery": "未在充电 %battery%",
@@ -146,6 +182,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 配置带 `version` 字段，加载时自动升级，**不会因为缺字段被当成损坏文件**：
 
 - 没有 `version` 的旧文件按 v1 处理，补齐新字段后写回，日志会打印「从 v1 升级到 v2」。
+- 每加一个字段就 `+1` 并补一段迁移：v2 加 SMTC 独立上报，v3 加自动更新。
 - `version` 比程序还新时只提示、不回写 —— 免得降级运行时把用户的新配置冲掉。
 - 只有 JSON 真的解析失败才会备份成 `config.json.invalid-<时间戳>` 并重建。
 
@@ -228,25 +265,36 @@ Windows 有一批临时浮层会抢走前台窗口：开始菜单、Alt+Tab、�
 ```
 UpDevice/
 ├── src/
-│   ├── UpDevice.Shared/           # 两个程序共用的配置模型与日志
-│   │   ├── Config/                # AppConfig、ConfigStore（自举 + 热重载）
+│   ├── UpDevice.Shared/           # 三个程序共用的部分
+│   │   ├── Config/                # AppConfig、ConfigStore（自举 + 版本迁移 + 热重载）
+│   │   ├── AppPaths.cs            # 目录布局：app-* 版本目录与 data 数据目录
+│   │   ├── AppVersion.cs          # 版本号（取自目录名）
+│   │   ├── UpdateChecker.cs       # GitHub Release 检查
+│   │   ├── UpdateInstaller.cs     # 更新包下载与 SHA256 校验
+│   │   ├── SiblingProcess.cs      # 互相拉起
+│   │   ├── Ipc.cs                 # 向主进程发指令（启动器与托盘共用）
+│   │   ├── SleepyApi.cs           # V4 / V5 接口差异
 │   │   └── Logging.cs
 │   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口
 │   │   ├── Program.cs
 │   │   ├── Native/                # Win32 封装、隐藏窗口
-│   │   ├── Capture/               # 前台窗口、空闲、控制器、电池
+│   │   ├── Capture/               # 前台窗口、空闲、控制器、电池、屏蔽规则
 │   │   ├── Media/                 # SMTC 播放信息
 │   │   └── Reporting/             # sleepy 客户端与上报循环
-│   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置
+│   ├── UpDevice.Tray/             # 托盘 + 本地 Web 配置
 │       ├── Program.cs             # 单实例、启动 Web 服务与托盘
 │       ├── TrayContext.cs         # 托盘图标与菜单
 │       ├── TrayWebHost.cs         # 回环 Web 服务与接口
-│       ├── Ipc.cs                 # 向主进程发指令
 │       ├── Autostart.cs           # 托盘开机自启（Run 键）
 │       ├── ScheduledTask.cs       # 主进程计划任务（schtasks）
 │       ├── Web/index.html         # 配置页
 │       └── app.manifest           # requireAdministrator
+│   └── UpDevice.Launcher/         # 启动器（无窗口入口）
+│       ├── Program.cs             # 无参数启动托盘 / --apply-update 替换目录
+│       ├── Updater.cs             # 起最新版本、解压新版本目录、清理旧目录
+│       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
+├── Directory.Build.props          # 统一版本号（CI 用 tag 覆盖）
 ├── .github/
 │   ├── workflows/build.yml        # 构建、打包 ZIP、发版
 │   └── release.yml                # Release 说明的分类规则
@@ -274,6 +322,8 @@ UpDevice/
 
 配置页由托盘内嵌的 Kestrel 提供，默认 `http://127.0.0.1:38945/`，端口被占用时自动向后找最多 10 个。**只绑回环地址**，因为它能读到 `secret`。
 
+页面分两个选项卡：**配置**（上报相关全部选项）与 **自动更新**（开关、检查间隔、更新源、当前版本、立即检查）。
+
 页面对应的接口：
 
 | 接口 | 用途 |
@@ -284,6 +334,7 @@ UpDevice/
 | `POST /api/reporting` | 开始 / 停止上报 |
 | `POST /api/task` | 启用 / 禁用计划任务 |
 | `POST /api/test` | 探测远端实例（先 `/query`，再退到 `/api/status/query`），并可校验密钥 |
+| `POST /api/update/check` | 查询 GitHub 最新 Release 并与当前版本比较（只查不装） |
 
 计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Service`，指向同目录的 `UpDevice.Service.exe`。
 
@@ -328,6 +379,35 @@ dotnet publish src/UpDevice.Service -c Release -o publish
 dotnet publish src/UpDevice.Tray    -c Release -o publish
 ```
 
+## 目录形态与配置位置
+
+分发结构参照 ClassIsland：**版本化程序目录 + 独立的 data 目录**，根目录保持干净。
+
+```
+UpDevice/
+├── UpDevice.Launcher.exe      # 启动器：单文件，旁边没有任何 dll
+├── app-1.0.1.1-0/             # 程序目录，版本就在目录名里
+│   ├── UpDevice.Service.exe
+│   ├── UpDevice.Tray.exe
+│   └── (其余 runtime 都在这个目录里)
+└── data/                      # 运行时生成，用户数据与程序分离
+    ├── Config/config.json
+    ├── Logs/
+    ├── Cache/Update/          # 下载的更新包
+    └── Temp/
+```
+
+根目录只有启动器一个文件 —— 它用 `PublishSingleFile` 打成一个 exe，原生库也一起塞在里面（运行时自解压到临时目录），所以不会出现「一堆 dll 堆在根目录」的样子。程序本体的依赖全部在 `app-*` 目录内。
+这样做的好处：
+
+- **更新只是新增一个 `app-<新版本>-<序号>/` 目录**，新版本启动后旧目录直接删掉。不存在「覆盖正在运行的文件」这种麻烦事，也不需要先改名再塞新文件。
+- **配置、日志、缓存都在 `data/` 下**，程序目录怎么换都不影响。旧版遗留的 `config.json` 会被自动搬到 `data/Config/`。
+- **版本号取自目录名**，不需要额外的版本文件，也不会出现「程序换了但版本没变」。
+
+路径推导见 `UpDevice.Shared/AppPaths.cs`。开发构建（`bin/Debug/...`）不在 `app-*` 目录里，会退回扁平的旧行为，不会平白造出 `data/`。
+
+配置文件路径优先级：环境变量 `UPDEVICE_CONFIG` → 版本化布局下的 `data/Config/config.json` → 程序目录下的 `config.json`。
+
 ## 持续集成
 
 `.github/workflows/build.yml`：
@@ -336,15 +416,19 @@ dotnet publish src/UpDevice.Tray    -c Release -o publish
 | --- | --- |
 | Push 到 `main` | 编译 + 发布 + 上传 ZIP 产物（保留 14 天） |
 | Pull Request 到 `main` | 同上，用于验证 PR |
-| Push `v*` 标签 | 在构建基础上创建 Release，附上 ZIP，ChangeLog 自动生成 |
-| 手动触发 | 可填版本号（如 `v1.0.0`）直接发版；留空只构建 |
+| Push 版本标签 | 在构建基础上创建 Release，附上 ZIP，ChangeLog 自动生成 |
+| 手动触发 | 可填版本号（如 `1.1.0.0`）直接发版；留空只构建 |
 
 打包细节：
 
 - 以 `win-x64`、**self-contained** 方式发布，用户不需要预装 .NET 10 运行时。
-- 两个程序发布到同一个 `publish/` 目录，一起压进 `UpDevice-<版本>-win-x64.zip`。
+- 压缩包内是版本化布局：根目录只有单文件 `UpDevice.Launcher.exe`，程序在 `app-<版本>-0/` 子目录里。
+- 打包时会校验根目录：出现 `.dll` / `.json` / `.pdb` 或者多余 exe 直接让构建失败。
+- 运行时不会生成 `data/`，由程序首次启动时创建。
+- **版本号由标签注入**：标签形如 `1.1.0.0`（**不带 `v` 前缀**）→ `-p:Version=1.1.0.0`；非标签构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
+- 版本格式为 `Major.Second.Patcher1.Patcher2` 四段，从 `1.1.0.0` 起算；标签不符合这个格式时只构建、不发版（历史带 `v` 的标签仍兼容）。
 - 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
-- 当前体积约 65 MB（压缩后）。
+- 代价说明：启动器与程序各自 self-contained，运行时会重复一份，包体因此偏大（约 120 MB）。若要缩小更新包，可改为框架依赖 + 要求预装 .NET 10 桌面运行时。
 
 ChangeLog 用 GitHub 原生的 release notes 生成，分类规则写在 `.github/release.yml`（新功能 / 问题修复 / 文档与构建 / 其他）。
 
@@ -379,6 +463,9 @@ docs: 更新使用说明
 - [x] 两程序互相拉起
 - [x] 退出托盘并停止上报（上报 `[设备已停止上报]` 后一起结束）
 - [x] GitHub Actions：构建、打包 ZIP、Release 与 ChangeLog
+- [x] 自动更新：检查 GitHub 最新 Release（配置页「自动更新」选项卡）
+- [x] 启动器 `UpDevice.Launcher.exe`：拉起程序、下载并整包替换 `UpDevice/`
+- [ ] 启动器自身更新（目前只随手动替换升级）
 - [ ] 首次运行引导（检测到未配置时自动打开配置页）
 - [ ] 计划任务的真实环境验证（沙箱内 `schtasks` 被禁用，仅验证了未就绪时的报错路径）
 

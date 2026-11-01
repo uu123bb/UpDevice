@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>UpDevice.Launcher</RootNamespace>
+    <AssemblyName>UpDevice.Launcher</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- 只是个入口：不起窗口、不用 WinForms，跑完就退 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      打成单文件：根目录只能有一个启动器 exe，不能散落一堆 runtime 的 dll
+      （程序本体在 app-<版本>-<序号>/ 里，各自 self-contained）。
+      原生库一起塞进 exe，运行时自解压到临时目录。
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UpDevice.Shared\UpDevice.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

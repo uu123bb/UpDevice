@@ -3,13 +3,15 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # 标签统一不带 v，形如 1.1.0.0；这里放开所有标签，
+    # 是否发版由「计算版本号」那步按格式判断。
+    tags: ["*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布为 Release 的版本号（如 v1.0.0），留空则只构建产物"
+        description: "要发布为 Release 的版本号（形如 1.1.0.0），留空则只构建产物"
         required: false
         default: ""
 
@@ -26,6 +28,9 @@ jobs:
   build:
     name: 构建并打包
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.ver.outputs.release }}
 
     steps:
       - name: 检出代码
@@ -36,36 +41,96 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: 计算版本号
+        id: ver
+        shell: pwsh
+        run: |
+          # 版本格式：Major.Second.Patcher1.Patcher2，例如 1.1.0.0
+          # 标签不带 v（历史标签带 v 的仍然兼容）
+          $candidate = ""
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $candidate = "${{ github.ref_name }}"
+          }
+          elseif ("${{ inputs.tag }}" -ne "") {
+            $candidate = "${{ inputs.tag }}"
+          }
+
+          $candidate = $candidate -replace '^[vV]', ''
+          $version = "0.0.0-dev"
+          $release = "false"
+
+          if ($candidate -ne "") {
+            if ($candidate -match '^\d+\.\d+\.\d+\.\d+$') {
+              $version = $candidate
+              $release = "true"
+            }
+            else {
+              Write-Host "「$candidate」不是 Major.Second.Patcher1.Patcher2 格式，本次只构建不发版"
+            }
+          }
+
+          Write-Host "版本号: $version (发版: $release)"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release=$release" >> $env:GITHUB_OUTPUT
+
       - name: 还原依赖
         run: dotnet restore UpDevice.sln
 
       - name: 编译
         run: dotnet build UpDevice.sln -c Release --no-restore
 
-      # 两个程序发布到同一目录：配置自举依赖它们在一起，运行时也好分发
-      # DebugType=none：不生成 pdb，省得事后删
+      # 布局参考 ClassIsland：启动器在根目录，程序进 app-<版本>-0 版本化目录，
+      # 更新时新增一个目录切过去，不用覆盖正在运行的文件。
       - name: 发布主进程
         run: >
           dotnet publish src/UpDevice.Service/UpDevice.Service.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
-          -o publish
+          -o publish/app-${{ steps.ver.outputs.version }}-0
 
       - name: 发布托盘
         run: >
           dotnet publish src/UpDevice.Tray/UpDevice.Tray.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
+          -p:DebugType=none -p:DebugSymbols=false
+          -o publish/app-${{ steps.ver.outputs.version }}-0
+
+      - name: 发布启动器
+        run: >
+          dotnet publish src/UpDevice.Launcher/UpDevice.Launcher.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
           -o publish
 
       - name: 整理产物
         shell: pwsh
         run: |
-          Copy-Item README.md, LICENSE -Destination publish -Force
-          if (Test-Path publish/config.json) { Remove-Item publish/config.json -Force }
+          # 根目录只允许一个单文件启动器，其余全部在 app-<版本>-<序号>/ 里
+          $rootFiles = Get-ChildItem -Path publish -File
+          $rootDirs = Get-ChildItem -Path publish -Directory
 
-          $exe = Get-ChildItem publish -Filter *.exe | Select-Object -ExpandProperty Name
-          Write-Host "可执行文件: $($exe -join ', ')"
+          Write-Host "根目录文件: $($rootFiles.Name -join ', ')"
+          Write-Host "根目录目录: $($rootDirs.Name -join ', ')"
+
+          $strayDll = $rootFiles | Where-Object { $_.Extension -in '.dll', '.json', '.pdb' }
+          if ($strayDll) {
+            throw "根目录出现了不该有的文件：$($strayDll.Name -join ', ')"
+          }
+
+          if ($rootFiles.Count -ne 1 -or $rootFiles[0].Name -ne 'UpDevice.Launcher.exe') {
+            throw "根目录应当只有 UpDevice.Launcher.exe"
+          }
+
+          $appDir = $rootDirs | Where-Object { $_.Name -like "app-*" } | Select-Object -First 1
+          if (-not $appDir) {
+            throw "打包目录结构不正确：缺少 app-* 目录"
+          }
+
+          $appExe = Get-ChildItem -Path $appDir.FullName -Filter *.exe | Select-Object -ExpandProperty Name
+          Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
       - name: 打包 ZIP
@@ -73,11 +138,8 @@ jobs:
         shell: pwsh
         run: |
           $name = "UpDevice-win-x64.zip"
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $name = "UpDevice-${{ github.ref_name }}-win-x64.zip"
-          }
-          elseif ("${{ inputs.tag }}" -ne "") {
-            $name = "UpDevice-${{ inputs.tag }}-win-x64.zip"
+          if ("${{ steps.ver.outputs.release }}" -eq "true") {
+            $name = "UpDevice-${{ steps.ver.outputs.version }}-win-x64.zip"
           }
 
           Compress-Archive -Path publish/* -DestinationPath $name -Force
@@ -97,10 +159,8 @@ jobs:
   release:
     name: 发布 Release
     needs: build
-    # 推 tag（v*）或手动指定版本号时才发版
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    # 由「计算版本号」判定：只有形如 1.1.0.0 的标签或手动输入才发版
+    if: needs.build.outputs.release == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -112,13 +172,12 @@ jobs:
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          # tag 触发时用已有 tag；手动触发时按输入创建
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          name: ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.build.outputs.version }}
+          name: ${{ needs.build.outputs.version }}
           files: artifact/**/*.zip
           # ChangeLog 由 GitHub 依据 .github/release.yml 的分类规则自动生成
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

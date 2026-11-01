@@ -1,13 +1,13 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using UpDevice.Shared;
 
-namespace UpDevice.Tray;
+
+namespace UpDevice.Shared;
 
 /// <summary>
 /// 与主进程的指令通道：主进程持有一个标题固定的隐藏窗口，这里用 WM_COPYDATA 发字符串指令。
 /// </summary>
-internal static class Ipc
+public static class Ipc
 {
     private const int WM_COPYDATA = 0x004A;
     private const string ServiceWindowCaption = "UpDevice.Service.Hidden";

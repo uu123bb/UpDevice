@@ -3,21 +3,21 @@ using System.Text;
 namespace UpDevice.Shared;
 
 /// <summary>
-/// 极简日志：同时写控制台（若被终端启动）与 logs/updevice-yyyyMMdd.log。
-/// 隐藏进程没有控制台时只会落文件。
+/// 极简日志：同时写控制台（若被终端启动）与 <c>data/Logs/updevice-yyyyMMdd.log</c>。
+/// 隐藏进程没有控制台时只会落文件。日志跟着 data 走，不随程序目录更新而丢失。
 /// </summary>
 public static class Logging
 {
     private static readonly object Gate = new();
-    private static string _logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+    private static string? _logDirectory;
     private static bool _consoleBroken;
+
+    private static string LogDirectory => _logDirectory ??= AppPaths.LogsDirectory;
 
     public static void Initialize(string? logDirectory = null)
     {
-        if (!string.IsNullOrWhiteSpace(logDirectory))
-        {
-            _logDirectory = logDirectory;
-        }
+        // 延迟到用时再取，确保 AppPaths 已经能判断出当前是哪种布局。
+        _logDirectory = string.IsNullOrWhiteSpace(logDirectory) ? AppPaths.LogsDirectory : logDirectory;
 
         try
         {
@@ -63,8 +63,9 @@ public static class Logging
 
             try
             {
-                Directory.CreateDirectory(_logDirectory);
-                File.AppendAllText(Path.Combine(_logDirectory, $"updevice-{DateTime.Now:yyyyMMdd}.log"), line + Environment.NewLine, new UTF8Encoding(false));
+                var directory = LogDirectory;
+                Directory.CreateDirectory(directory);
+                File.AppendAllText(Path.Combine(directory, $"updevice-{DateTime.Now:yyyyMMdd}.log"), line + Environment.NewLine, new UTF8Encoding(false));
             }
             catch
             {
