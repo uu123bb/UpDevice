@@ -20,7 +20,10 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
 
-        var configPath = ConfigPath.Resolve();
+        AppPaths.EnsureDirectories();
+        AppPaths.MigrateLegacyConfig();
+
+        var configPath = AppPaths.ConfigFile;
         var store = ConfigStore.Load(configPath);
         Logging.Info($"配置文件: {store.Path}");
 

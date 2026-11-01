@@ -8,7 +8,8 @@ namespace UpDevice.Shared;
 /// </summary>
 public static class UpdateInstaller
 {
-    public static string WorkingDirectory => Path.Combine(Path.GetTempPath(), "UpDevice-update");
+    /// <summary>下载目录放在 data/Cache/Update，随 data 一起保留，不占程序目录。</summary>
+    public static string WorkingDirectory => AppPaths.UpdateCacheDirectory;
 
     /// <summary>下载并校验更新包，返回 zip 的完整路径。</summary>
     public static async Task<string> DownloadAsync(UpdateCheckResult info, CancellationToken token)

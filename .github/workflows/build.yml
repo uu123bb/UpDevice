@@ -55,14 +55,15 @@ jobs:
       - name: 编译
         run: dotnet build UpDevice.sln -c Release --no-restore
 
-      # 布局：启动器在根目录，两个程序装在 UpDevice/ 子目录（整包更新只替换这个子目录）
+      # 布局参考 ClassIsland：启动器在根目录，程序进 app-<版本>-0 版本化目录，
+      # 更新时新增一个目录切过去，不用覆盖正在运行的文件。
       - name: 发布主进程
         run: >
           dotnet publish src/UpDevice.Service/UpDevice.Service.csproj
           -c Release -r win-x64 --self-contained true
           -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
-          -o publish/UpDevice
+          -o publish/app-${{ steps.ver.outputs.version }}-0
 
       - name: 发布托盘
         run: >
@@ -70,7 +71,7 @@ jobs:
           -c Release -r win-x64 --self-contained true
           -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
-          -o publish/UpDevice
+          -o publish/app-${{ steps.ver.outputs.version }}-0
 
       - name: 发布启动器
         run: >
@@ -84,14 +85,10 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item README.md, LICENSE -Destination publish -Force
-
-          # 版本文件：启动器靠它判断「当前装的是哪个版本」（程序集版本不会随整包更新变化）
-          Set-Content -Path publish/UpDevice/version.txt -Value "${{ steps.ver.outputs.version }}" -NoNewline -Encoding ascii
-
           if (Test-Path publish/config.json) { Remove-Item publish/config.json -Force }
 
           Write-Host "启动器: $((Get-ChildItem publish -Filter *.exe).Name -join ', ')"
-          Write-Host "程序目录: $((Get-ChildItem publish/UpDevice -Filter *.exe).Name -join ', ')"
+          Write-Host "程序目录: $((Get-ChildItem publish/app-* -Filter *.exe).Name -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
       - name: 打包 ZIP

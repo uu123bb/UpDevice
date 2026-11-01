@@ -63,35 +63,33 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ## 启动器
 
-`UpDevice.Launcher.exe` 是个**入口，不是独立程序** —— 没有窗口，跑完就退出。它只做两件事：
-
-功能对应两种调用方式：
+`UpDevice.Launcher.exe` 是个**入口，不是独立程序** —— 没有窗口，跑完就退出。两种调用：
 
 | 调用 | 行为 |
 | --- | --- |
-| `UpDevice.Launcher.exe` | 把托盘拉起来，立刻退出（主进程由托盘互拉） |
-| `UpDevice.Launcher.exe --apply-update <zip> [--version x.y.z]` | 等进程退出 → 替换 `UpDevice/` → 重新拉起托盘 → 退出 |
-
-之所以由它来换目录：托盘自己跑在 `UpDevice/` 里面，没法覆盖自己；启动器在外面，不受影响。
+| `UpDevice.Launcher.exe` | 找根目录下版本最高的 `app-*` 目录，跑里面的托盘，然后退出 |
+| `... --apply-update <zip> [--version x.y.z]` | 解压成新的 `app-<版本>-<序号>` 目录 → 结束旧进程 → 切过去 → 重启托盘 → 清理旧目录 |
 
 更新由托盘触发（网页「自动更新」页的「立即更新」）：
 
 ```
-托盘：检查 releases/latest → 下载 zip → 校验 SHA256（用 Release 的 digest）
+托盘：检查 releases/latest → 下载 zip 到 data/Cache/Update → 校验 SHA256
   → 启动 UpDevice.Launcher.exe --apply-update <zip> --version <新版本>
   → 自己退出（先让主进程上报离线）
 
-启动器：先解压到 UpDevice.new（失败就不打断运行中的程序）
+启动器：解压成 app-<新版本>-0/（失败不影响正在运行的旧版本）
   → 通知主进程上报离线并退出，等托盘与主进程结束（超时强杀）
-  → 旧目录改名 UpDevice.old，新目录就位，删除备份
-  → 写入 version.txt → 重新拉起托盘
+  → 目录改名就位
+  → 启动新版本托盘 → 删除其他旧版本目录
 ```
 
-进程刚被杀掉时文件句柄还没释放，直接移动目录会报「文件正被另一进程使用」，所以移动带重试；替换失败会把旧目录放回去并清掉暂存，不会留下半套文件。
+新解压出来的目录还没接管之前，旧版本一直正常服务 —— 这是版本化目录相对「原地替换」最大的好处。
+
+因为新旧版本各在各的目录里，删除正在运行的目录会失败，所以清理放在启动新版本之后，删不掉只记一条警告，下次更新再试。
 
 要求管理员权限：写入程序目录以及拉起同样提权的托盘都需要，一次 UAC 之后不再弹。
 
-**已知限制**：启动器自身不参与自动更新 —— 它比 `UpDevice/` 里的程序更新得慢，只有手动替换才会升级。版本号取自 `UpDevice/version.txt`（由启动器写入），所以「当前版本」始终反映程序目录里的版本，不会因为启动器没换而失真。
+**已知限制**：启动器自身不参与自动更新 —— 更新包里虽然带着新的启动器，但只取其中的 `app-*` 目录，启动器本身只有手动替换才会升级。
 
 ## 与 sleepy 服务端的对接
 
@@ -136,7 +134,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 
 ## 配置
 
-配置内容由托盘程序维护，主进程只读取（文件缺失时按默认值创建，见下）。文件位于**两个程序所在的同一目录**下，名为 `config.json`：
+配置内容由托盘程序维护，主进程只读取（文件缺失时按默认值创建，见下）。文件位于 `data/Config/config.json`（开发构建时退回程序目录）：
 
 ```jsonc
 {
@@ -269,8 +267,8 @@ UpDevice/
 ├── src/
 │   ├── UpDevice.Shared/           # 三个程序共用的部分
 │   │   ├── Config/                # AppConfig、ConfigStore（自举 + 版本迁移 + 热重载）
-│   │   ├── ConfigPath.cs          # config.json 定位（兼容扁平与启动器两种布局）
-│   │   ├── AppVersion.cs          # 版本号读取与解析
+│   │   ├── AppPaths.cs            # 目录布局：app-* 版本目录与 data 数据目录
+│   │   ├── AppVersion.cs          # 版本号（取自目录名）
 │   │   ├── UpdateChecker.cs       # GitHub Release 检查
 │   │   ├── UpdateInstaller.cs     # 更新包下载与 SHA256 校验
 │   │   ├── SiblingProcess.cs      # 互相拉起
@@ -293,7 +291,7 @@ UpDevice/
 │       └── app.manifest           # requireAdministrator
 │   └── UpDevice.Launcher/         # 启动器（无窗口入口）
 │       ├── Program.cs             # 无参数启动托盘 / --apply-update 替换目录
-│       ├── Updater.cs             # 解压、结束进程、替换目录、重启
+│       ├── Updater.cs             # 起最新版本、解压新版本目录、清理旧目录
 │       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
 ├── Directory.Build.props          # 统一版本号（CI 用 tag 覆盖）
@@ -383,25 +381,30 @@ dotnet publish src/UpDevice.Tray    -c Release -o publish
 
 ## 目录形态与配置位置
 
-正式分发是「启动器 + 程序目录」的结构：
+分发结构参照 ClassIsland：**版本化程序目录 + 独立的 data 目录**。
 
 ```
 UpDevice/
-├── UpDevice.Launcher.exe     # 启动器：拉起托盘、检查并安装更新
-├── config.json               # 配置放在启动器旁边
-└── UpDevice/                 # 程序目录，整包更新时会被替换
-    ├── UpDevice.Service.exe
-    ├── UpDevice.Tray.exe
-    └── version.txt           # 当前版本（CI 写入，启动器靠它判断新旧）
+├── UpDevice.Launcher.exe      # 启动器（入口，无窗口）
+├── app-1.0.1.1-0/             # 程序目录，版本就在目录名里
+│   ├── UpDevice.Service.exe
+│   └── UpDevice.Tray.exe
+└── data/                      # 用户数据，与程序分离
+    ├── Config/config.json
+    ├── Logs/
+    ├── Cache/Update/          # 下载的更新包
+    └── Temp/
 ```
 
-`config.json` **必须放在程序目录外面**：自动更新会整目录替换 `UpDevice/`，放在里面每次更新都会冲掉 server 和 secret。
+这样做的好处：
 
-程序定位配置的优先级（`UpDevice.Shared/ConfigPath.cs`）：
+- **更新只是新增一个 `app-<新版本>-<序号>/` 目录**，新版本启动后旧目录直接删掉。不存在「覆盖正在运行的文件」这种麻烦事，也不需要先改名再塞新文件。
+- **配置、日志、缓存都在 `data/` 下**，程序目录怎么换都不影响。旧版遗留的 `config.json` 会被自动搬到 `data/Config/`。
+- **版本号取自目录名**，不需要额外的版本文件，也不会出现「程序换了但版本没变」。
 
-1. 环境变量 `UPDEVICE_CONFIG`（测试用）
-2. 上一级目录存在 `UpDevice.Launcher.exe` → 用上一级的 `config.json`
-3. 否则用程序自身目录的 `config.json`（开发时的扁平布局）
+路径推导见 `UpDevice.Shared/AppPaths.cs`。开发构建（`bin/Debug/...`）不在 `app-*` 目录里，会退回扁平的旧行为，不会平白造出 `data/`。
+
+配置文件路径优先级：环境变量 `UPDEVICE_CONFIG` → 版本化布局下的 `data/Config/config.json` → 程序目录下的 `config.json`。
 
 ## 持续集成
 
@@ -417,8 +420,8 @@ UpDevice/
 打包细节：
 
 - 以 `win-x64`、**self-contained** 方式发布，用户不需要预装 .NET 10 运行时。
-- 压缩包内是启动器布局：`UpDevice.Launcher.exe` + `UpDevice/` 子目录（两个程序）。
-- 打包时写入 `UpDevice/version.txt`，启动器与托盘都靠它报告当前版本。
+- 压缩包内是版本化布局：根目录 `UpDevice.Launcher.exe` + `app-<版本>-0/` 子目录（两个程序）。
+- 运行时不会生成 `data/`，由程序首次启动时创建。
 - **版本号由 tag 注入**：`v1.0.1.1` → `-p:Version=1.0.1.1`；非 tag 构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
 - 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
 - 代价说明：启动器与程序各自 self-contained，运行时会重复一份，包体因此偏大（约 120 MB）。若要缩小更新包，可改为框架依赖 + 要求预装 .NET 10 桌面运行时。

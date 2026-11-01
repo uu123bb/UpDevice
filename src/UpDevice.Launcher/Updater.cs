@@ -5,49 +5,57 @@ using UpDevice.Shared;
 namespace UpDevice.Launcher;
 
 /// <summary>
-/// 启动器只做两件事：把托盘拉起来；需要更新时把 UpDevice/ 目录换掉。
+/// 版本化目录的启动器：
+///   启动 → 找根目录下版本最高的 app-* 目录，跑里面的托盘
+///   更新 → 把新版本解压成新的 app-&lt;版本&gt;-&lt;序号&gt; 目录，切过去，顺手清理旧目录
 ///
-/// 之所以由它来换目录：托盘自己跑在 UpDevice/ 里面，没法覆盖自己。
-/// 启动器在外面，等进程退出后整目录替换，再重新拉起托盘即可。
+/// 因为新旧版本各在各的目录里，替换时不存在「覆盖运行中的文件」问题，
+/// 也不需要把旧目录改名再塞新的进去。
 /// </summary>
 internal static class Updater
 {
-    public const string AppDirectoryName = "UpDevice";
     public const string TrayExeName = "UpDevice.Tray.exe";
     public const string ServiceExeName = "UpDevice.Service.exe";
 
-    public static string AppDirectory => Path.Combine(AppContext.BaseDirectory, AppDirectoryName);
+    /// <summary>启动器本身在根目录，Root 就是它所在目录。</summary>
+    public static string Root => AppPaths.Root;
 
-    public static string TrayPath => Path.Combine(AppDirectory, TrayExeName);
+    public static (string Path, Version Version)? FindLatestApp()
+    {
+        var candidates = AppPaths.EnumerateAppDirectories(Root);
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
 
-    /// <summary>
-    /// 用给定的压缩包替换程序目录。调用前应已完成下载与校验（由托盘负责）。
-    /// </summary>
-    public static async Task ApplyAsync(string zipPath, string? version, CancellationToken token = default)
+        var best = candidates[0];
+        return (best.Path, best.Version);
+    }
+
+    /// <summary>解压新版本到独立目录，切换过去。返回新版本目录。</summary>
+    public static async Task<string> ApplyAsync(string zipPath, string? versionText, CancellationToken token = default)
     {
         if (!File.Exists(zipPath))
         {
             throw new FileNotFoundException("更新包不存在", zipPath);
         }
 
-        // 先解压再停程序：解压失败就不用打断正在运行的服务。
-        var staging = AppDirectory + ".new";
+        if (AppVersion.Parse(versionText) is not { } version)
+        {
+            throw new InvalidOperationException("更新包缺少可用的版本号");
+        }
+
+        var directoryName = NextAppDirectoryName(version);
+        var staging = Path.Combine(Root, directoryName + ".new");
+
         if (Directory.Exists(staging))
         {
             Directory.Delete(staging, true);
         }
 
+        // 先解压再停程序：解压失败就不用打断正在运行的服务。
         ZipFile.ExtractToDirectory(zipPath, staging, overwriteFiles: true);
-
-        // 兼容压缩包里多套一层 UpDevice/
-        var nested = Path.Combine(staging, AppDirectoryName);
-        if (File.Exists(Path.Combine(nested, TrayExeName)))
-        {
-            var flattened = staging + "-flat";
-            Directory.Move(nested, flattened);
-            Directory.Delete(staging, true);
-            Directory.Move(flattened, staging);
-        }
+        FlattenIfNested(staging);
 
         if (!File.Exists(Path.Combine(staging, TrayExeName)))
         {
@@ -55,81 +63,75 @@ internal static class Updater
             throw new InvalidOperationException($"更新包结构不符合预期：找不到 {TrayExeName}");
         }
 
-        // 版本文件由启动器写入，保证「当前版本」跟刚装上的包一致。
-        if (!string.IsNullOrWhiteSpace(version))
-        {
-            await File.WriteAllTextAsync(Path.Combine(staging, AppVersion.FileName), version.Trim(), token)
-                .ConfigureAwait(false);
-        }
-
         await StopAppsAsync(token).ConfigureAwait(false);
 
-        var backup = AppDirectory + ".old";
-        if (Directory.Exists(backup))
-        {
-            Directory.Delete(backup, true);
-        }
+        var target = Path.Combine(Root, directoryName);
+        MoveDirectoryWithRetry(staging, target);
 
-        try
-        {
-            if (Directory.Exists(AppDirectory))
-            {
-                MoveDirectoryWithRetry(AppDirectory, backup);
-            }
-
-            MoveDirectoryWithRetry(staging, AppDirectory);
-        }
-        catch
-        {
-            // 替换失败：把旧目录放回去，清掉暂存，避免留下半套文件。
-            if (!Directory.Exists(AppDirectory) && Directory.Exists(backup))
-            {
-                MoveDirectoryWithRetry(backup, AppDirectory);
-            }
-
-            if (Directory.Exists(staging))
-            {
-                try
-                {
-                    Directory.Delete(staging, true);
-                }
-                catch
-                {
-                    // 删不掉就留着，下次更新会覆盖。
-                }
-            }
-
-            throw;
-        }
-
-        try
-        {
-            Directory.Delete(backup, true);
-        }
-        catch
-        {
-            // 备份删不掉不影响使用，下次更新会再试。
-        }
+        CleanupOldApps(target);
+        return target;
     }
 
     /// <summary>
-    /// 进程刚被杀掉时文件句柄还没释放，直接 Move 会报「文件正被另一进程使用」。
-    /// 重试几次是最省事的处理方式。
+    /// CI 产出的压缩包是「启动器 + app-&lt;版本&gt;-0/」的完整布局，
+    /// 而这里要的只是一个程序目录的内容，所以把里面带托盘的那个目录提出来，
+    /// 其余（启动器本身、README）丢掉 —— 启动器不参与自动更新。
     /// </summary>
-    private static void MoveDirectoryWithRetry(string source, string destination, int attempts = 8)
+    private static void FlattenIfNested(string staging)
     {
-        for (var attempt = 1; ; attempt++)
+        if (File.Exists(Path.Combine(staging, TrayExeName)))
         {
+            return;
+        }
+
+        var candidates = Directory.GetDirectories(staging)
+            .Where(directory => File.Exists(Path.Combine(directory, TrayExeName)))
+            .ToList();
+
+        if (candidates.Count != 1)
+        {
+            return;
+        }
+
+        var flattened = staging + "-flat";
+        Directory.Move(candidates[0], flattened);
+        Directory.Delete(staging, true);
+        Directory.Move(flattened, staging);
+    }
+
+    private static string NextAppDirectoryName(Version version)
+    {
+        for (var revision = 0; revision < 100; revision++)
+        {
+            var name = $"{AppPaths.AppDirectoryPrefix}{version}-{revision}";
+            if (!Directory.Exists(Path.Combine(Root, name))
+                && !Directory.Exists(Path.Combine(Root, name + ".new")))
+            {
+                return name;
+            }
+        }
+
+        return $"{AppPaths.AppDirectoryPrefix}{version}-{DateTime.Now:HHmmss}";
+    }
+
+    /// <summary>删掉除当前版本外的旧目录。删不掉不致命 —— 下次更新还会再试。</summary>
+    private static void CleanupOldApps(string keep)
+    {
+        foreach (var candidate in AppPaths.EnumerateAppDirectories(Root))
+        {
+            if (string.Equals(candidate.Path, keep, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             try
             {
-                Directory.Move(source, destination);
-                return;
+                Directory.Delete(candidate.Path, true);
+                Logging.Info($"已清理旧版本 {Path.GetFileName(candidate.Path)}");
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                       && attempt < attempts)
+            catch (Exception ex)
             {
-                Logging.Warn($"目录移动被占用，重试 {attempt}/{attempts - 1}");
-                Thread.Sleep(500);
+                Logging.Warn($"旧版本 {Path.GetFileName(candidate.Path)} 暂时删不掉，下次再试：{ex.Message}");
             }
         }
     }
@@ -142,7 +144,6 @@ internal static class Updater
             Ipc.SendCommand("stop-and-exit");
         }
 
-        // 主进程收到指令后会先上报离线再退出，给它几秒。
         await WaitForExitAsync(ServiceExeName, TimeSpan.FromSeconds(6), token).ConfigureAwait(false);
         await WaitForExitAsync(TrayExeName, TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
 
@@ -154,7 +155,6 @@ internal static class Updater
                 {
                     process.Kill();
                     Logging.Warn($"强制结束 {name} (PID {process.Id})");
-
                     // Kill 只是发信号，必须等它真的退出，否则文件句柄还锁着。
                     process.WaitForExit(5000);
                 }
@@ -165,7 +165,6 @@ internal static class Updater
             }
         }
 
-        // 再确认一遍，避免有残留进程占着目录。
         await WaitForExitAsync(ServiceExeName, TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
         await WaitForExitAsync(TrayExeName, TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
     }
@@ -184,12 +183,36 @@ internal static class Updater
         }
     }
 
-    /// <summary>启动托盘（主进程由托盘自己拉起）。</summary>
+    private static void MoveDirectoryWithRetry(string source, string destination, int attempts = 8)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Directory.Move(source, destination);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < attempts)
+            {
+                Logging.Warn($"目录移动被占用，重试 {attempt}/{attempts - 1}");
+                Thread.Sleep(500);
+            }
+        }
+    }
+
+    /// <summary>启动版本最高的那套程序（主进程由托盘自己拉起）。</summary>
     public static bool StartApps()
     {
-        if (!File.Exists(TrayPath))
+        if (FindLatestApp() is not { } app)
         {
-            Logging.Warn($"未找到 {TrayPath}");
+            Logging.Warn($"根目录下没有找到 {AppPaths.AppDirectoryPrefix}* 程序目录：{Root}");
+            return false;
+        }
+
+        var trayPath = Path.Combine(app.Path, TrayExeName);
+        if (!File.Exists(trayPath))
+        {
+            Logging.Warn($"未找到 {trayPath}");
             return false;
         }
 
@@ -200,12 +223,12 @@ internal static class Updater
 
         try
         {
-            Process.Start(new ProcessStartInfo(TrayPath)
+            Process.Start(new ProcessStartInfo(trayPath)
             {
                 UseShellExecute = false,
-                WorkingDirectory = AppDirectory,
+                WorkingDirectory = app.Path,
             });
-            Logging.Info("已启动托盘");
+            Logging.Info($"已启动托盘 {Path.GetFileName(app.Path)}");
             return true;
         }
         catch (Exception ex)

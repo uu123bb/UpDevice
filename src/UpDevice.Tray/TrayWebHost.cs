@@ -219,7 +219,7 @@ internal sealed class TrayWebHost
                 return Results.Json(new { ok = false, message = "已经是最新版本" });
             }
 
-            var launcher = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "UpDevice.Launcher.exe"));
+            var launcher = AppPaths.LauncherPath;
             if (!File.Exists(launcher))
             {
                 return Results.Json(new { ok = false, message = "未找到 UpDevice.Launcher.exe，无法自动安装更新" });
