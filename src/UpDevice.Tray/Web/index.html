@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UpDevice 配置</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --text: #1c1f23;
+      --muted: #6b7280;
+      --line: #e3e6ea;
+      --accent: #2f6df6;
+      --accent-soft: #e8effe;
+      --ok: #17845a;
+      --warn: #b45309;
+      --danger: #c0392b;
+      --radius: 10px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181d;
+        --card: #1e2127;
+        --text: #e6e8ec;
+        --muted: #9aa1ad;
+        --line: #2c313a;
+        --accent: #5b8cff;
+        --accent-soft: #202a3d;
+        --ok: #4ade80;
+        --warn: #fbbf24;
+        --danger: #f87171;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 28px 16px 60px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    .wrap { max-width: 760px; margin: 0 auto; }
+
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+
+    .card h2 {
+      font-size: 14px;
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; }
+    .row + .row { border-top: 1px dashed var(--line); }
+    .row .label { flex: 0 0 auto; max-width: 52%; }
+    .row .label small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 2px; }
+    .row .control { flex: 1 1 auto; display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+
+    input[type="text"], input[type="password"], input[type="number"], select {
+      width: 100%;
+      max-width: 340px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+
+    input[type="range"] { width: 190px; accent-color: var(--accent); }
+
+    button {
+      font: inherit;
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { filter: brightness(1.06); }
+    button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .switch { position: relative; width: 44px; height: 24px; flex: 0 0 auto; }
+    .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+    .switch span {
+      position: absolute; inset: 0; border-radius: 999px; background: var(--line);
+      transition: background .15s;
+    }
+    .switch span::after {
+      content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+      border-radius: 50%; background: #fff; transition: transform .15s;
+    }
+    .switch input:checked + span { background: var(--accent); }
+    .switch input:checked + span::after { transform: translateX(20px); }
+    .switch input:disabled + span { opacity: .45; }
+
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .chip {
+      font-size: 12px; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--line); color: var(--muted); background: var(--card);
+    }
+    .chip.ok { color: var(--ok); border-color: currentColor; }
+    .chip.warn { color: var(--warn); border-color: currentColor; }
+
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .hint { color: var(--muted); font-size: 12px; }
+
+    #toast {
+      position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+      background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 999px;
+      font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>UpDevice 配置</h1>
+    <div class="sub">修改后点击「保存并刷新上报」，主进程会立即重新加载。</div>
+
+    <div class="chips" id="chips"></div>
+
+    <div class="card">
+      <h2>运行控制</h2>
+      <div class="row">
+        <div class="label">上报开关<small>停止上报后主进程不再发送任何请求</small></div>
+        <div class="control">
+          <button id="btnReporting">加载中…</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">开机启动（任务计划）<small>登录时自动拉起主进程</small></div>
+        <div class="control">
+          <button id="btnTask">加载中…</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>远端配置</h2>
+      <div class="row">
+        <div class="label">远端 Sleepy 实例<small>会自动搜索可用接口</small></div>
+        <div class="control"><input id="serverUrl" type="text" placeholder="https://sleepy.example.com" /></div>
+      </div>
+      <div class="row">
+        <div class="label">远端 SECRET<small>请不要泄露 SECRET</small></div>
+        <div class="control"><input id="secret" type="password" autocomplete="off" /></div>
+      </div>
+      <div class="row">
+        <div class="label">连通性</div>
+        <div class="control">
+          <span class="hint" id="testResult"></span>
+          <button id="btnTest">测试远端实例连接</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">设备 ID<small>请不要泄露设备 ID</small></div>
+        <div class="control"><input id="deviceId" type="text" /></div>
+      </div>
+      <div class="row">
+        <div class="label">设备名<small>页面上显示的名字</small></div>
+        <div class="control"><input id="showName" type="text" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>上报设置</h2>
+      <div class="row">
+        <div class="label">上报时间<small>单位为秒，默认 5</small></div>
+        <div class="control"><input id="intervalSeconds" type="number" min="1" max="3600" /></div>
+      </div>
+      <div class="row">
+        <div class="label">不重复上报<small>仅在状态变化时才发送</small></div>
+        <div class="control">
+          <label class="switch"><input id="onlyOnChange" type="checkbox" /><span></span></label>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">上报形式</div>
+        <div class="control">
+          <select id="statusFormat">
+            <option value="process">进程名</option>
+            <option value="window">窗口名</option>
+            <option value="window+process">二者-窗口名置前</option>
+            <option value="process+window">二者-进程名置前</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">SMTC 信息<small>目前只支持网易云音乐与 QQ 音乐</small></div>
+        <div class="control">
+          <select id="smtcMode">
+            <option value="off">不上报</option>
+            <option value="idle">仅在待机时上报</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">超时时间<small>超过该时间无输入即视为待机，0 表示禁用</small></div>
+        <div class="control"><input id="idleTimeoutSeconds" type="number" min="0" max="86400" /></div>
+      </div>
+      <div class="row">
+        <div class="label">获取控制器输入<small>防止用手柄游戏时被判为待机</small></div>
+        <div class="control">
+          <label class="switch"><input id="controllerEnabled" type="checkbox" /><span></span></label>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">获取所有控制器<small>默认只读取 1 号与 2 号</small></div>
+        <div class="control">
+          <label class="switch"><input id="controllerAll" type="checkbox" /><span></span></label>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">控制器死区<small>避免零死区设备空闲时被当作输入</small></div>
+        <div class="control">
+          <input id="controllerDeadzoneRange" type="range" min="0" max="1" step="0.01" />
+          <input id="controllerDeadzone" type="number" min="0" max="1" step="0.01" style="max-width:88px" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">便携式设备模式<small>上报电池状态与电源状态</small></div>
+        <div class="control">
+          <label class="switch"><input id="portableMode" type="checkbox" /><span></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>文案配置</h2>
+      <div class="row">
+        <div class="label">设备关机时</div>
+        <div class="control"><input id="textShutdown" type="text" /></div>
+      </div>
+      <div class="row">
+        <div class="label">电池状态 · 使用电池<small>%battery% 会替换为电量</small></div>
+        <div class="control"><input id="textBatteryOnBattery" type="text" /></div>
+      </div>
+      <div class="row">
+        <div class="label">电池状态 · 连接电源<small>%battery% 会替换为电量</small></div>
+        <div class="control"><input id="textBatteryOnAc" type="text" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="actions">
+        <button class="primary" id="btnSave">保存并刷新上报</button>
+        <button id="btnReload">放弃修改</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+    let config = null;
+
+    const toast = (message) => {
+      const box = el("toast");
+      box.textContent = message;
+      box.classList.add("show");
+      clearTimeout(box._timer);
+      box._timer = setTimeout(() => box.classList.remove("show"), 2600);
+    };
+
+    const api = async (path, options) => {
+      const response = await fetch(path, options);
+      return response.json();
+    };
+
+    const setChecked = (node, value) => { node.checked = Boolean(value); };
+
+    function renderState(state) {
+      el("chips").innerHTML = [
+        `<span class="chip ${state.reportingEnabled ? "ok" : "warn"}">${state.reportingEnabled ? "正在上报" : "已停止上报"}</span>`,
+        `<span class="chip ${state.scheduledTaskEnabled ? "ok" : ""}">${state.scheduledTaskEnabled ? "任务计划已启用" : "任务计划未启用"}</span>`,
+        `<span class="chip ${state.serviceRunning ? "ok" : "warn"}">${state.serviceRunning ? "主进程运行中" : "主进程未运行"}</span>`,
+        `<span class="chip">${state.url}</span>`,
+      ].join("");
+
+      const reporting = el("btnReporting");
+      reporting.textContent = state.reportingEnabled ? "停止上报" : "开始上报";
+      reporting.classList.toggle("on", state.reportingEnabled);
+
+      const task = el("btnTask");
+      task.textContent = state.scheduledTaskEnabled ? "禁用任务计划" : "启用任务计划";
+      task.classList.toggle("on", true);
+    }
+
+    function renderConfig(cfg) {
+      config = cfg;
+      el("serverUrl").value = cfg.remote.serverUrl || "";
+      el("secret").value = cfg.remote.secret || "";
+      el("deviceId").value = cfg.remote.deviceId || "";
+      el("showName").value = cfg.remote.showName || "";
+
+      el("intervalSeconds").value = cfg.report.intervalSeconds;
+      setChecked(el("onlyOnChange"), cfg.report.onlyOnChange);
+      el("statusFormat").value = cfg.report.statusFormat;
+      el("smtcMode").value = cfg.report.smtcMode;
+      el("idleTimeoutSeconds").value = cfg.report.idleTimeoutSeconds;
+      setChecked(el("controllerEnabled"), cfg.report.controllerEnabled);
+      setChecked(el("controllerAll"), cfg.report.controllerAll);
+      el("controllerDeadzone").value = cfg.report.controllerDeadzone.toFixed(2);
+      el("controllerDeadzoneRange").value = cfg.report.controllerDeadzone;
+      setChecked(el("portableMode"), cfg.report.portableMode);
+
+      el("textShutdown").value = cfg.texts.shutdown || "";
+      el("textBatteryOnBattery").value = cfg.texts.batteryOnBattery || "";
+      el("textBatteryOnAc").value = cfg.texts.batteryOnAc || "";
+
+      applyDependencies();
+    }
+
+    function applyDependencies() {
+      const controller = el("controllerEnabled").checked;
+      el("controllerAll").disabled = !controller;
+      el("controllerDeadzone").disabled = !controller;
+      el("controllerDeadzoneRange").disabled = !controller;
+
+      const portable = el("portableMode").checked;
+      el("textBatteryOnBattery").disabled = !portable;
+      el("textBatteryOnAc").disabled = !portable;
+    }
+
+    function collect() {
+      return {
+        reportingEnabled: config.reportingEnabled,
+        remote: {
+          serverUrl: el("serverUrl").value.trim(),
+          secret: el("secret").value,
+          deviceId: el("deviceId").value.trim(),
+          showName: el("showName").value.trim(),
+        },
+        report: {
+          intervalSeconds: Number(el("intervalSeconds").value) || 5,
+          onlyOnChange: el("onlyOnChange").checked,
+          statusFormat: el("statusFormat").value,
+          smtcMode: el("smtcMode").value,
+          idleTimeoutSeconds: Number(el("idleTimeoutSeconds").value),
+          controllerEnabled: el("controllerEnabled").checked,
+          controllerAll: el("controllerAll").checked,
+          controllerDeadzone: Number(el("controllerDeadzone").value),
+          portableMode: el("portableMode").checked,
+        },
+        texts: {
+          shutdown: el("textShutdown").value,
+          batteryOnBattery: el("textBatteryOnBattery").value,
+          batteryOnAc: el("textBatteryOnAc").value,
+        },
+      };
+    }
+
+    async function refresh() {
+      const [state, cfg] = await Promise.all([api("/api/state"), api("/api/config")]);
+      renderState(state);
+      renderConfig(cfg);
+    }
+
+    el("controllerEnabled").addEventListener("change", applyDependencies);
+    el("portableMode").addEventListener("change", applyDependencies);
+
+    el("controllerDeadzoneRange").addEventListener("input", (event) => {
+      el("controllerDeadzone").value = Number(event.target.value).toFixed(2);
+    });
+    el("controllerDeadzone").addEventListener("input", (event) => {
+      el("controllerDeadzoneRange").value = event.target.value;
+    });
+
+    el("btnSave").addEventListener("click", async () => {
+      const result = await api("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collect()),
+      });
+      toast(result.message || "已保存");
+      await refresh();
+    });
+
+    el("btnReload").addEventListener("click", async () => {
+      await refresh();
+      toast("已还原为已保存的配置");
+    });
+
+    el("btnTest").addEventListener("click", async () => {
+      el("testResult").textContent = "测试中…";
+      const result = await api("/api/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serverUrl: el("serverUrl").value, secret: el("secret").value }),
+      });
+      el("testResult").textContent = result.message;
+      if (result.ok && result.serverUrl) {
+        el("serverUrl").value = result.serverUrl;
+      }
+    });
+
+    el("btnReporting").addEventListener("click", async () => {
+      const next = !el("btnReporting").classList.contains("on");
+      const result = await api("/api/reporting", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      toast(result.message || "已切换");
+      await refresh();
+    });
+
+    el("btnTask").addEventListener("click", async () => {
+      const currently = el("btnTask").textContent.includes("禁用");
+      const result = await api("/api/task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !currently }),
+      });
+      toast(result.message || "已切换");
+      await refresh();
+    });
+
+    refresh().catch((error) => toast("加载配置失败：" + error.message));
+  </script>
+</body>
+
+</html>

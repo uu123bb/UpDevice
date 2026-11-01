@@ -1,0 +1,33 @@
+# Release 说明的分类规则
+# GitHub 会按 PR / commit 上的标签把变更分到下面几组
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+      - github-actions
+
+  categories:
+    - title: 新功能
+      labels:
+        - feat
+        - feature
+        - enhancement
+
+    - title: 问题修复
+      labels:
+        - fix
+        - bug
+        - bugfix
+
+    - title: 文档与构建
+      labels:
+        - docs
+        - documentation
+        - build
+        - ci
+
+    - title: 其他变更
+      labels:
+        - "*"
