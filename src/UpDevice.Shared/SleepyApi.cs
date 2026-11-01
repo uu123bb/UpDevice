@@ -124,6 +124,12 @@ public static class SleepyApi
         {
             throw;
         }
+        catch (TaskCanceledException)
+        {
+            // HttpClient 超时在 .NET 里抛的是 TaskCanceledException，消息只有
+            // "A task was canceled."，完全看不出是超时 —— 这里翻成人话。
+            return QueryProbe.Failed($"{new Uri(url).AbsolutePath} → 请求超时（10 秒）");
+        }
         catch (Exception ex)
         {
             return QueryProbe.Failed($"{new Uri(url).AbsolutePath} → {ex.GetBaseException().Message}");
