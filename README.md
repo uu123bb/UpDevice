@@ -107,7 +107,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 
 ```jsonc
 {
-  "version": 2,                        // 配置结构版本，旧版本会自动升级
+  "version": 3,                        // 配置结构版本，旧版本会自动升级
   "reportingEnabled": true,            // 开始 / 停止上报
   "remote": {
     "serverUrl": "https://sleepy.example.com",
@@ -131,6 +131,11 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
     "showName": "",
     "pendingRemoveId": ""              // 内部字段：待删除的旧 SMTC 设备
   },
+  "update": {                          // v3 新增
+    "enabled": true,                   // 自动检查更新
+    "intervalHours": 6,                // 检查间隔（GitHub 匿名接口每小时 60 次）
+    "repository": "uu123bb/UpDevice"   // 更新源
+  },
   "texts": {
     "shutdown": "设备关闭",
     "batteryOnBattery": "未在充电 %battery%",
@@ -146,6 +151,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 配置带 `version` 字段，加载时自动升级，**不会因为缺字段被当成损坏文件**：
 
 - 没有 `version` 的旧文件按 v1 处理，补齐新字段后写回，日志会打印「从 v1 升级到 v2」。
+- 每加一个字段就 `+1` 并补一段迁移：v2 加 SMTC 独立上报，v3 加自动更新。
 - `version` 比程序还新时只提示、不回写 —— 免得降级运行时把用户的新配置冲掉。
 - 只有 JSON 真的解析失败才会备份成 `config.json.invalid-<时间戳>` 并重建。
 
@@ -228,13 +234,18 @@ Windows 有一批临时浮层会抢走前台窗口：开始菜单、Alt+Tab、�
 ```
 UpDevice/
 ├── src/
-│   ├── UpDevice.Shared/           # 两个程序共用的配置模型与日志
-│   │   ├── Config/                # AppConfig、ConfigStore（自举 + 热重载）
+│   ├── UpDevice.Shared/           # 三个程序共用的部分
+│   │   ├── Config/                # AppConfig、ConfigStore（自举 + 版本迁移 + 热重载）
+│   │   ├── ConfigPath.cs          # config.json 定位（兼容扁平与启动器两种布局）
+│   │   ├── AppVersion.cs          # 版本号读取与解析
+│   │   ├── UpdateChecker.cs       # GitHub Release 检查
+│   │   ├── SiblingProcess.cs      # 互相拉起
+│   │   ├── SleepyApi.cs           # V4 / V5 接口差异
 │   │   └── Logging.cs
 │   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口
 │   │   ├── Program.cs
 │   │   ├── Native/                # Win32 封装、隐藏窗口
-│   │   ├── Capture/               # 前台窗口、空闲、控制器、电池
+│   │   ├── Capture/               # 前台窗口、空闲、控制器、电池、屏蔽规则
 │   │   ├── Media/                 # SMTC 播放信息
 │   │   └── Reporting/             # sleepy 客户端与上报循环
 │   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置
@@ -247,6 +258,7 @@ UpDevice/
 │       ├── Web/index.html         # 配置页
 │       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
+├── Directory.Build.props          # 统一版本号（CI 用 tag 覆盖）
 ├── .github/
 │   ├── workflows/build.yml        # 构建、打包 ZIP、发版
 │   └── release.yml                # Release 说明的分类规则
@@ -274,6 +286,8 @@ UpDevice/
 
 配置页由托盘内嵌的 Kestrel 提供，默认 `http://127.0.0.1:38945/`，端口被占用时自动向后找最多 10 个。**只绑回环地址**，因为它能读到 `secret`。
 
+页面分两个选项卡：**配置**（上报相关全部选项）与 **自动更新**（开关、检查间隔、更新源、当前版本、立即检查）。
+
 页面对应的接口：
 
 | 接口 | 用途 |
@@ -284,6 +298,7 @@ UpDevice/
 | `POST /api/reporting` | 开始 / 停止上报 |
 | `POST /api/task` | 启用 / 禁用计划任务 |
 | `POST /api/test` | 探测远端实例（先 `/query`，再退到 `/api/status/query`），并可校验密钥 |
+| `POST /api/update/check` | 查询 GitHub 最新 Release 并与当前版本比较（只查不装） |
 
 计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Service`，指向同目录的 `UpDevice.Service.exe`。
 
@@ -328,6 +343,27 @@ dotnet publish src/UpDevice.Service -c Release -o publish
 dotnet publish src/UpDevice.Tray    -c Release -o publish
 ```
 
+## 目录形态与配置位置
+
+正式分发是一个「启动器 + 程序目录」的结构（`UpDevice.Launcher.exe` 尚未实现，规划中）：
+
+```
+UpDevice/
+├── UpDevice.Launcher.exe     # 启动器：拉起托盘，将来负责自动更新
+├── config.json               # 配置放在启动器旁边
+└── UpDevice/                 # 程序目录，整包更新时会被替换
+    ├── UpDevice.Service.exe
+    └── UpDevice.Tray.exe
+```
+
+`config.json` **必须放在程序目录外面**：自动更新会整目录替换 `UpDevice/`，放在里面每次更新都会冲掉 server 和 secret。
+
+程序定位配置的优先级（`UpDevice.Shared/ConfigPath.cs`）：
+
+1. 环境变量 `UPDEVICE_CONFIG`（测试用）
+2. 上一级目录存在 `UpDevice.Launcher.exe` → 用上一级的 `config.json`
+3. 否则用程序自身目录的 `config.json`（开发时的扁平布局）
+
 ## 持续集成
 
 `.github/workflows/build.yml`：
@@ -344,7 +380,8 @@ dotnet publish src/UpDevice.Tray    -c Release -o publish
 - 以 `win-x64`、**self-contained** 方式发布，用户不需要预装 .NET 10 运行时。
 - 两个程序发布到同一个 `publish/` 目录，一起压进 `UpDevice-<版本>-win-x64.zip`。
 - 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
-- 当前体积约 65 MB（压缩后）。
+- **版本号由 tag 注入**：`v1.0.1.1` → `-p:Version=1.0.1.1`；非 tag 构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
+- 当前体积约 68 MB（压缩后）。
 
 ChangeLog 用 GitHub 原生的 release notes 生成，分类规则写在 `.github/release.yml`（新功能 / 问题修复 / 文档与构建 / 其他）。
 
@@ -379,6 +416,8 @@ docs: 更新使用说明
 - [x] 两程序互相拉起
 - [x] 退出托盘并停止上报（上报 `[设备已停止上报]` 后一起结束）
 - [x] GitHub Actions：构建、打包 ZIP、Release 与 ChangeLog
+- [x] 自动更新：检查 GitHub 最新 Release（配置页「自动更新」选项卡）
+- [ ] 启动器 `UpDevice.Launcher.exe`：拉起程序、下载并整包替换 `UpDevice/`
 - [ ] 首次运行引导（检测到未配置时自动打开配置页）
 - [ ] 计划任务的真实环境验证（沙箱内 `schtasks` 被禁用，仅验证了未就绪时的报错路径）
 

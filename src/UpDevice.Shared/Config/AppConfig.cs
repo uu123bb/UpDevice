@@ -6,7 +6,7 @@ namespace UpDevice.Shared.Config;
 public sealed class AppConfig
 {
     /// <summary>当前配置结构版本。加字段或改语义时 +1，并在 ConfigStore 里补迁移。</summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     /// <summary>
     /// 配置结构版本。**默认 0 表示「未标注版本」**（v1 时代写的文件没有这个字段），
@@ -25,6 +25,9 @@ public sealed class AppConfig
     /// <summary>SMTC 单独上报成一个设备时的配置（v2 新增）。</summary>
     public SmtcConfig Smtc { get; set; } = new();
 
+    /// <summary>自动更新设置（v3 新增）。</summary>
+    public UpdateConfig Update { get; set; } = new();
+
     public TextConfig Texts { get; set; } = new();
 
     /// <summary>把越界值收敛到合理范围，避免手改配置把程序搞挂。</summary>
@@ -33,6 +36,7 @@ public sealed class AppConfig
         Report ??= new ReportConfig();
         Remote ??= new RemoteConfig();
         Smtc ??= new SmtcConfig();
+        Update ??= new UpdateConfig();
         Texts ??= new TextConfig();
 
         Remote.ServerUrl = (Remote.ServerUrl ?? string.Empty).Trim();
@@ -56,6 +60,9 @@ public sealed class AppConfig
         Smtc.DeviceId = (Smtc.DeviceId ?? string.Empty).Trim();
         Smtc.ShowName = (Smtc.ShowName ?? string.Empty).Trim();
         Smtc.PendingRemoveId = (Smtc.PendingRemoveId ?? string.Empty).Trim();
+
+        Update.IntervalHours = Math.Clamp(Update.IntervalHours, 1, 168);
+        Update.Repository = string.IsNullOrWhiteSpace(Update.Repository) ? "uu123bb/UpDevice" : Update.Repository.Trim();
 
         Texts.Shutdown = string.IsNullOrWhiteSpace(Texts.Shutdown) ? "设备关闭" : Texts.Shutdown;
         Texts.BatteryOnBattery = string.IsNullOrWhiteSpace(Texts.BatteryOnBattery) ? "未在充电 %battery%" : Texts.BatteryOnBattery;
@@ -155,4 +162,17 @@ public sealed class SmtcConfig
     /// 主进程删除成功后清空 —— 这样即使当时主进程没在跑，下次启动也会补删。
     /// </summary>
     public string PendingRemoveId { get; set; } = string.Empty;
+}
+
+/// <summary>自动更新设置。真正下载与替换由启动器执行，这里只存偏好。</summary>
+public sealed class UpdateConfig
+{
+    /// <summary>是否自动检查更新。</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>检查间隔（小时）。GitHub 匿名接口每小时只有 60 次，别设太小。</summary>
+    public int IntervalHours { get; set; } = 6;
+
+    /// <summary>更新源仓库，格式 owner/repo。</summary>
+    public string Repository { get; set; } = "uu123bb/UpDevice";
 }
