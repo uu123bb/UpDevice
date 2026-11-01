@@ -36,36 +36,77 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: 计算版本号
+        id: ver
+        shell: pwsh
+        run: |
+          # tag 形如 v1.0.1.1，去掉前缀就是四段版本号；非 tag 构建标记为开发版
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.0.0-dev"
+          }
+          Write-Host "版本号: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: 还原依赖
         run: dotnet restore UpDevice.sln
 
       - name: 编译
         run: dotnet build UpDevice.sln -c Release --no-restore
 
-      # 两个程序发布到同一目录：配置自举依赖它们在一起，运行时也好分发
-      # DebugType=none：不生成 pdb，省得事后删
+      # 布局参考 ClassIsland：启动器在根目录，程序进 app-<版本>-0 版本化目录，
+      # 更新时新增一个目录切过去，不用覆盖正在运行的文件。
       - name: 发布主进程
         run: >
           dotnet publish src/UpDevice.Service/UpDevice.Service.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
-          -o publish
+          -o publish/app-${{ steps.ver.outputs.version }}-0
 
       - name: 发布托盘
         run: >
           dotnet publish src/UpDevice.Tray/UpDevice.Tray.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
+          -p:DebugType=none -p:DebugSymbols=false
+          -o publish/app-${{ steps.ver.outputs.version }}-0
+
+      - name: 发布启动器
+        run: >
+          dotnet publish src/UpDevice.Launcher/UpDevice.Launcher.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
           -o publish
 
       - name: 整理产物
         shell: pwsh
         run: |
-          Copy-Item README.md, LICENSE -Destination publish -Force
-          if (Test-Path publish/config.json) { Remove-Item publish/config.json -Force }
+          # 根目录只允许一个单文件启动器，其余全部在 app-<版本>-<序号>/ 里
+          $rootFiles = Get-ChildItem -Path publish -File
+          $rootDirs = Get-ChildItem -Path publish -Directory
 
-          $exe = Get-ChildItem publish -Filter *.exe | Select-Object -ExpandProperty Name
-          Write-Host "可执行文件: $($exe -join ', ')"
+          Write-Host "根目录文件: $($rootFiles.Name -join ', ')"
+          Write-Host "根目录目录: $($rootDirs.Name -join ', ')"
+
+          $strayDll = $rootFiles | Where-Object { $_.Extension -in '.dll', '.json', '.pdb' }
+          if ($strayDll) {
+            throw "根目录出现了不该有的文件：$($strayDll.Name -join ', ')"
+          }
+
+          if ($rootFiles.Count -ne 1 -or $rootFiles[0].Name -ne 'UpDevice.Launcher.exe') {
+            throw "根目录应当只有 UpDevice.Launcher.exe"
+          }
+
+          $appDir = $rootDirs | Where-Object { $_.Name -like "app-*" } | Select-Object -First 1
+          if (-not $appDir) {
+            throw "打包目录结构不正确：缺少 app-* 目录"
+          }
+
+          $appExe = Get-ChildItem -Path $appDir.FullName -Filter *.exe | Select-Object -ExpandProperty Name
+          Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
       - name: 打包 ZIP
