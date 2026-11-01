@@ -82,6 +82,13 @@ public sealed class ConfigStore : IDisposable
             Logging.Info("config.json 从 v1 升级到 v2（新增 SMTC 独立上报配置）");
         }
 
+        if (version < 3)
+        {
+            // v2 → v3：新增 update 节点（自动更新偏好）
+            config.Update ??= new UpdateConfig();
+            Logging.Info("config.json 从 v2 升级到 v3（新增自动更新配置）");
+        }
+
         config.Version = AppConfig.CurrentVersion;
         config.Normalize();
 

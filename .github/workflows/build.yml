@@ -36,6 +36,19 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: 计算版本号
+        id: ver
+        shell: pwsh
+        run: |
+          # tag 形如 v1.0.1.1，去掉前缀就是四段版本号；非 tag 构建标记为开发版
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.0.0-dev"
+          }
+          Write-Host "版本号: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: 还原依赖
         run: dotnet restore UpDevice.sln
 
@@ -48,6 +61,7 @@ jobs:
         run: >
           dotnet publish src/UpDevice.Service/UpDevice.Service.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
           -o publish
 
@@ -55,6 +69,7 @@ jobs:
         run: >
           dotnet publish src/UpDevice.Tray/UpDevice.Tray.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.ver.outputs.version }}
           -p:DebugType=none -p:DebugSymbols=false
           -o publish
 

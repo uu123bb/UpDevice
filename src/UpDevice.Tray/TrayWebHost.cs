@@ -95,6 +95,7 @@ internal sealed class TrayWebHost
             autostartEnabled = Autostart.IsEnabled(),
             serviceRunning = Ipc.IsServiceRunning,
             url = Url,
+            currentVersion = AppVersion.CurrentText,
         }));
 
         application.MapGet("/api/config", () => Results.Json(_store.Current));
@@ -194,6 +195,13 @@ internal sealed class TrayWebHost
             }
 
             return Results.Json(new { ok = true, message, serverUrl });
+        });
+
+        // 只检查不安装：下载与替换文件由启动器负责。
+        application.MapPost("/api/update/check", async () =>
+        {
+            var result = await UpdateChecker.CheckAsync(_store.Current.Update.Repository, CancellationToken.None);
+            return Results.Json(result);
         });
     }
 

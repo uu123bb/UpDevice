@@ -29,7 +29,7 @@ internal static class Program
             return 0;
         }
 
-        var configPath = Path.Combine(AppContext.BaseDirectory, "config.json");
+        var configPath = ConfigPath.Resolve();
         using var store = ConfigStore.Load(configPath);
         Logging.Info($"配置文件: {store.Path}");
 

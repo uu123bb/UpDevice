@@ -20,7 +20,7 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
 
-        var configPath = Path.Combine(AppContext.BaseDirectory, "config.json");
+        var configPath = ConfigPath.Resolve();
         var store = ConfigStore.Load(configPath);
         Logging.Info($"配置文件: {store.Path}");
 

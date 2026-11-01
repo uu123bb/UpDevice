@@ -1,0 +1,14 @@
+<Project>
+
+  <PropertyGroup>
+    <!--
+      版本号：
+        本地构建用这里的值；CI 会用 tag 覆盖（dotnet publish -p:Version=x.y.z）。
+      四段式，比较时用 System.Version（1.0.1.1 > 1.0.1.0 直接成立）。
+    -->
+    <Version>1.0.1.1</Version>
+    <Product>UpDevice</Product>
+    <Company>uu123bb</Company>
+  </PropertyGroup>
+
+</Project>
