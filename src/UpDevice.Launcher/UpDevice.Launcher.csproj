@@ -7,9 +7,8 @@
     <AssemblyName>UpDevice.Launcher</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>latest</LangVersion>
-    <!-- 托盘需要管理员权限；启动器也提权，避免拉起托盘时再弹一次 UAC -->
+    <!-- 只是个入口：不起窗口、不用 WinForms，跑完就退 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 

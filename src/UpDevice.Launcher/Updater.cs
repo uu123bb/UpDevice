@@ -1,13 +1,14 @@
 using System.Diagnostics;
 using System.IO.Compression;
-using System.Security.Cryptography;
 using UpDevice.Shared;
 
 namespace UpDevice.Launcher;
 
 /// <summary>
-/// 整包更新：下载 → 校验 → 解压到临时目录 → 结束进程 → 替换 UpDevice/ → 重启。
-/// 之所以能整目录替换，是因为程序都装在 UpDevice/ 子目录里，而这个更新器本体在外面。
+/// 启动器只做两件事：把托盘拉起来；需要更新时把 UpDevice/ 目录换掉。
+///
+/// 之所以由它来换目录：托盘自己跑在 UpDevice/ 里面，没法覆盖自己。
+/// 启动器在外面，等进程退出后整目录替换，再重新拉起托盘即可。
 /// </summary>
 internal static class Updater
 {
@@ -19,37 +20,17 @@ internal static class Updater
 
     public static string TrayPath => Path.Combine(AppDirectory, TrayExeName);
 
-    /// <summary>下载并安装更新。返回 true 表示已替换完成（调用方负责重启程序）。</summary>
-    public static async Task InstallAsync(
-        UpdateCheckResult info,
-        IProgress<string> progress,
-        CancellationToken token)
+    /// <summary>
+    /// 用给定的压缩包替换程序目录。调用前应已完成下载与校验（由托盘负责）。
+    /// </summary>
+    public static async Task ApplyAsync(string zipPath, string? version, CancellationToken token = default)
     {
-        if (string.IsNullOrWhiteSpace(info.AssetUrl))
+        if (!File.Exists(zipPath))
         {
-            throw new InvalidOperationException("Release 里没有找到 zip 产物");
+            throw new FileNotFoundException("更新包不存在", zipPath);
         }
 
-        var working = Path.Combine(Path.GetTempPath(), "UpDevice-update", info.LatestVersion ?? "latest");
-        Directory.CreateDirectory(working);
-        var zipPath = Path.Combine(working, info.AssetName ?? "update.zip");
-
-        progress.Report($"正在下载 {info.AssetName}…");
-        using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) })
-        {
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("UpDevice-Updater");
-            using var response = await http.GetAsync(info.AssetUrl, HttpCompletionOption.ResponseHeadersRead, token)
-                .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-
-            await using var target = File.Create(zipPath);
-            await response.Content.CopyToAsync(target, token).ConfigureAwait(false);
-        }
-
-        progress.Report("正在校验文件…");
-        await VerifyDigestAsync(zipPath, info.AssetDigest, token).ConfigureAwait(false);
-
-        progress.Report("正在解压…");
+        // 先解压再停程序：解压失败就不用打断正在运行的服务。
         var staging = AppDirectory + ".new";
         if (Directory.Exists(staging))
         {
@@ -58,41 +39,68 @@ internal static class Updater
 
         ZipFile.ExtractToDirectory(zipPath, staging, overwriteFiles: true);
 
-        // 压缩包根目录就是 UpDevice 目录的内容；如果被打包成带一层 UpDevice/，这里兜一下。
+        // 兼容压缩包里多套一层 UpDevice/
         var nested = Path.Combine(staging, AppDirectoryName);
-        var source = File.Exists(Path.Combine(nested, TrayExeName)) ? nested : staging;
-
-        if (!File.Exists(Path.Combine(source, TrayExeName)))
+        if (File.Exists(Path.Combine(nested, TrayExeName)))
         {
-            Directory.Delete(staging, true);
-            throw new InvalidOperationException("更新包结构不符合预期：找不到 UpDevice.Tray.exe");
-        }
-
-        if (source != staging)
-        {
-            // 把内层内容提上来，省得替换后目录套目录。
             var flattened = staging + "-flat";
-            Directory.Move(source, flattened);
+            Directory.Move(nested, flattened);
             Directory.Delete(staging, true);
             Directory.Move(flattened, staging);
         }
 
-        progress.Report("正在结束程序…");
+        if (!File.Exists(Path.Combine(staging, TrayExeName)))
+        {
+            Directory.Delete(staging, true);
+            throw new InvalidOperationException($"更新包结构不符合预期：找不到 {TrayExeName}");
+        }
+
+        // 版本文件由启动器写入，保证「当前版本」跟刚装上的包一致。
+        if (!string.IsNullOrWhiteSpace(version))
+        {
+            await File.WriteAllTextAsync(Path.Combine(staging, AppVersion.FileName), version.Trim(), token)
+                .ConfigureAwait(false);
+        }
+
         await StopAppsAsync(token).ConfigureAwait(false);
 
-        progress.Report("正在替换程序文件…");
         var backup = AppDirectory + ".old";
         if (Directory.Exists(backup))
         {
             Directory.Delete(backup, true);
         }
 
-        if (Directory.Exists(AppDirectory))
+        try
         {
-            Directory.Move(AppDirectory, backup);
-        }
+            if (Directory.Exists(AppDirectory))
+            {
+                MoveDirectoryWithRetry(AppDirectory, backup);
+            }
 
-        Directory.Move(staging, AppDirectory);
+            MoveDirectoryWithRetry(staging, AppDirectory);
+        }
+        catch
+        {
+            // 替换失败：把旧目录放回去，清掉暂存，避免留下半套文件。
+            if (!Directory.Exists(AppDirectory) && Directory.Exists(backup))
+            {
+                MoveDirectoryWithRetry(backup, AppDirectory);
+            }
+
+            if (Directory.Exists(staging))
+            {
+                try
+                {
+                    Directory.Delete(staging, true);
+                }
+                catch
+                {
+                    // 删不掉就留着，下次更新会覆盖。
+                }
+            }
+
+            throw;
+        }
 
         try
         {
@@ -104,22 +112,25 @@ internal static class Updater
         }
     }
 
-    private static async Task VerifyDigestAsync(string filePath, string? digest, CancellationToken token)
+    /// <summary>
+    /// 进程刚被杀掉时文件句柄还没释放，直接 Move 会报「文件正被另一进程使用」。
+    /// 重试几次是最省事的处理方式。
+    /// </summary>
+    private static void MoveDirectoryWithRetry(string source, string destination, int attempts = 8)
     {
-        if (string.IsNullOrWhiteSpace(digest))
+        for (var attempt = 1; ; attempt++)
         {
-            Logging.Warn("Release 未提供 digest，跳过校验");
-            return;
-        }
-
-        var expected = digest.Contains(':') ? digest[(digest.IndexOf(':') + 1)..] : digest;
-
-        await using var stream = File.OpenRead(filePath);
-        var actual = Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
-
-        if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("更新包校验失败（SHA256 不匹配），已中止");
+            try
+            {
+                Directory.Move(source, destination);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                       && attempt < attempts)
+            {
+                Logging.Warn($"目录移动被占用，重试 {attempt}/{attempts - 1}");
+                Thread.Sleep(500);
+            }
         }
     }
 
@@ -131,6 +142,7 @@ internal static class Updater
             Ipc.SendCommand("stop-and-exit");
         }
 
+        // 主进程收到指令后会先上报离线再退出，给它几秒。
         await WaitForExitAsync(ServiceExeName, TimeSpan.FromSeconds(6), token).ConfigureAwait(false);
         await WaitForExitAsync(TrayExeName, TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
 
@@ -142,6 +154,9 @@ internal static class Updater
                 {
                     process.Kill();
                     Logging.Warn($"强制结束 {name} (PID {process.Id})");
+
+                    // Kill 只是发信号，必须等它真的退出，否则文件句柄还锁着。
+                    process.WaitForExit(5000);
                 }
                 catch
                 {
@@ -149,6 +164,10 @@ internal static class Updater
                 }
             }
         }
+
+        // 再确认一遍，避免有残留进程占着目录。
+        await WaitForExitAsync(ServiceExeName, TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+        await WaitForExitAsync(TrayExeName, TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
     }
 
     private static async Task WaitForExitAsync(string exeName, TimeSpan timeout, CancellationToken token)
@@ -156,8 +175,7 @@ internal static class Updater
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            var running = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exeName));
-            if (running.Length == 0)
+            if (Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exeName)).Length == 0)
             {
                 return;
             }

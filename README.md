@@ -16,7 +16,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 | 项目 | 角色 | 职责 |
 | --- | --- | --- |
-| `UpDevice.Launcher` | 启动器 | 拉起托盘、检查并安装更新（整包替换 `UpDevice/` 目录） |
+| `UpDevice.Launcher` | 启动器 | 无窗口入口：拉起托盘；被调用时替换 `UpDevice/` 目录完成更新 |
 | `UpDevice.Service` | 主进程 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
 | `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制主进程启停、展示上报状态 |
 
@@ -63,24 +63,35 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ## 启动器
 
-`UpDevice.Launcher.exe` 也在根目录，同样要求管理员权限 —— 拉起托盘时不会再多弹一次 UAC。
+`UpDevice.Launcher.exe` 是个**入口，不是独立程序** —— 没有窗口，跑完就退出。它只做两件事：
 
-界面很小：版本、状态、日志，加四个按钮（启动 / 检查更新 / 打开配置页 / 退出）。启动时自动拉起托盘，并按配置里的 `update.enabled` 静默检查一次更新。
+功能对应两种调用方式：
 
-更新流程：
+| 调用 | 行为 |
+| --- | --- |
+| `UpDevice.Launcher.exe` | 把托盘拉起来，立刻退出（主进程由托盘互拉） |
+| `UpDevice.Launcher.exe --apply-update <zip> [--version x.y.z]` | 等进程退出 → 替换 `UpDevice/` → 重新拉起托盘 → 退出 |
+
+之所以由它来换目录：托盘自己跑在 `UpDevice/` 里面，没法覆盖自己；启动器在外面，不受影响。
+
+更新由托盘触发（网页「自动更新」页的「立即更新」）：
 
 ```
-检查 releases/latest → 有新版本就提示 → 下载 zip
-  → 校验 SHA256（用 Release 里的 digest）
-  → 解压到 UpDevice.new
-  → 通知主进程上报离线并退出，等托盘与主进程结束（超时则强杀）
+托盘：检查 releases/latest → 下载 zip → 校验 SHA256（用 Release 的 digest）
+  → 启动 UpDevice.Launcher.exe --apply-update <zip> --version <新版本>
+  → 自己退出（先让主进程上报离线）
+
+启动器：先解压到 UpDevice.new（失败就不打断运行中的程序）
+  → 通知主进程上报离线并退出，等托盘与主进程结束（超时强杀）
   → 旧目录改名 UpDevice.old，新目录就位，删除备份
-  → 重新拉起托盘
+  → 写入 version.txt → 重新拉起托盘
 ```
 
-之所以能整目录替换，是因为程序都装在 `UpDevice/` 子目录里，而更新器本体在外面，不会被自己覆盖。
+进程刚被杀掉时文件句柄还没释放，直接移动目录会报「文件正被另一进程使用」，所以移动带重试；替换失败会把旧目录放回去并清掉暂存，不会留下半套文件。
 
-**已知限制**：启动器自身不参与自动更新 —— 它比 `UpDevice/` 里的程序更新得慢，只有手动替换或重装才会升级。版本号取自 `UpDevice/version.txt`，所以「当前版本」始终反映程序目录里的版本，不会因为启动器没换而失真。
+要求管理员权限：写入程序目录以及拉起同样提权的托盘都需要，一次 UAC 之后不再弹。
+
+**已知限制**：启动器自身不参与自动更新 —— 它比 `UpDevice/` 里的程序更新得慢，只有手动替换才会升级。版本号取自 `UpDevice/version.txt`（由启动器写入），所以「当前版本」始终反映程序目录里的版本，不会因为启动器没换而失真。
 
 ## 与 sleepy 服务端的对接
 
@@ -261,6 +272,7 @@ UpDevice/
 │   │   ├── ConfigPath.cs          # config.json 定位（兼容扁平与启动器两种布局）
 │   │   ├── AppVersion.cs          # 版本号读取与解析
 │   │   ├── UpdateChecker.cs       # GitHub Release 检查
+│   │   ├── UpdateInstaller.cs     # 更新包下载与 SHA256 校验
 │   │   ├── SiblingProcess.cs      # 互相拉起
 │   │   ├── Ipc.cs                 # 向主进程发指令（启动器与托盘共用）
 │   │   ├── SleepyApi.cs           # V4 / V5 接口差异
@@ -279,10 +291,9 @@ UpDevice/
 │       ├── ScheduledTask.cs       # 主进程计划任务（schtasks）
 │       ├── Web/index.html         # 配置页
 │       └── app.manifest           # requireAdministrator
-│   └── UpDevice.Launcher/         # 启动器
-│       ├── Program.cs
-│       ├── LauncherForm.cs        # 小窗口：版本、状态、日志、按钮
-│       ├── Updater.cs             # 下载 / 校验 / 替换目录
+│   └── UpDevice.Launcher/         # 启动器（无窗口入口）
+│       ├── Program.cs             # 无参数启动托盘 / --apply-update 替换目录
+│       ├── Updater.cs             # 解压、结束进程、替换目录、重启
 │       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
 ├── Directory.Build.props          # 统一版本号（CI 用 tag 覆盖）

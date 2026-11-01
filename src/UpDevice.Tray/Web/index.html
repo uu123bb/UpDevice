@@ -319,14 +319,15 @@
           <div class="control">
             <span class="hint" id="updateResult"></span>
             <button id="btnCheckUpdate">立即检查更新</button>
+            <button id="btnInstallUpdate" disabled>立即更新</button>
           </div>
         </div>
       </div>
 
       <div class="card">
         <div class="hint">
-          这里只做检查：下载与文件替换由启动器 <code>UpDevice.Launcher.exe</code> 负责，
-          因为它需要先结束两个进程，再整包替换程序目录。
+          更新由启动器安装：托盘负责下载与校验（SHA256），随后调用
+          <code>UpDevice.Launcher.exe --apply-update</code> 结束进程、替换 <code>UpDevice/</code> 目录并重启。
         </div>
       </div>
     </section>
@@ -500,8 +501,31 @@
         el("updateResult").textContent = result.hasUpdate
           ? `${result.message}（当前 ${result.currentVersion}）`
           : result.message;
+        el("btnInstallUpdate").disabled = !result.hasUpdate;
       } catch (error) {
         el("updateResult").textContent = "检查失败：" + error.message;
+      }
+    });
+
+    el("btnInstallUpdate").addEventListener("click", async () => {
+      if (!confirm("将下载更新包并重启程序，期间服务会短暂中断。继续？")) {
+        return;
+      }
+
+      el("btnInstallUpdate").disabled = true;
+      el("updateResult").textContent = "正在下载并校验，可能需要一会儿…";
+
+      try {
+        const result = await api("/api/update/install", { method: "POST" });
+        el("updateResult").textContent = result.message;
+        if (result.ok) {
+          toast("更新已开始，程序即将退出");
+        } else {
+          el("btnInstallUpdate").disabled = false;
+        }
+      } catch (error) {
+        el("updateResult").textContent = "更新失败：" + error.message;
+        el("btnInstallUpdate").disabled = false;
       }
     });
 
