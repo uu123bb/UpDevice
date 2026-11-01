@@ -9,17 +9,24 @@ internal enum ForegroundVerdict
     /// <summary>临时浮层（Alt+Tab、通知中心、输入法…），保留上一次的结果，不更新。</summary>
     Skip,
 
-    /// <summary>用户并没有在用什么应用（桌面、锁屏），应当报待机。</summary>
-    Idle,
+    /// <summary>
+    /// 桌面：没有前台应用，文案显示待机；
+    /// 但**不等于离线** —— 可能只是坐在桌面上等任务，是否离线交给空闲时间判断。
+    /// </summary>
+    Desktop,
+
+    /// <summary>锁屏：用户确实不在，直接离线。</summary>
+    Locked,
 }
 
 /// <summary>
 /// 前台窗口的判定规则。
 ///
-/// 分三档，别混在一起：
-///   Idle   —— 桌面、锁屏：确实不在用，报「待机」并置离线
-///   Skip   —— 临时浮层：只是挡了一下，保留上一次的应用名（否则状态会抖）
-///   Accept —— 其余：正常应用
+/// 分四档，别混在一起：
+///   Locked  —— 锁屏：直接离线
+///   Desktop —— 桌面：文案显示待机，但在线状态交给空闲时间（可能在等任务）
+///   Skip    —— 临时浮层：保留上一次的应用名（否则状态会抖）
+///   Accept  —— 其余：正常应用
 ///
 /// 标题清单参照 sleepy 官方客户端 client/win_device.py 的 SKIPPED_NAMES / NOT_USING_NAMES，
 /// 另外补了进程名与窗口类名两维度的判断（有些浮层标题随内容变，靠标题抓不住）。
@@ -93,20 +100,21 @@ internal static class ForegroundFilter
 
     public static ForegroundVerdict Evaluate(ForegroundInfo info, bool sessionLocked)
     {
-        // 桌面 / 锁屏：报待机
+        // 锁屏：人确实不在
         if (sessionLocked)
         {
-            return ForegroundVerdict.Idle;
+            return ForegroundVerdict.Locked;
         }
 
         if (info.ProcessName.Length > 0 && LockScreenProcesses.Contains(info.ProcessName))
         {
-            return ForegroundVerdict.Idle;
+            return ForegroundVerdict.Locked;
         }
 
+        // 桌面：文案待机，但在不在线看空闲时间
         if (info.ClassName.Length > 0 && DesktopClasses.Contains(info.ClassName))
         {
-            return ForegroundVerdict.Idle;
+            return ForegroundVerdict.Desktop;
         }
 
         // 临时浮层：保留上一次
