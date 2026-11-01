@@ -46,11 +46,54 @@ public sealed class ConfigStore : IDisposable
     {
         EnsureExists(path);
         var config = ReadFromDisk(path) ?? AppConfig.CreateDefault();
+
+        UpgradeIfNeeded(config, path);
         config.Normalize();
 
         var store = new ConfigStore(path, config);
         store.StartWatching();
         return store;
+    }
+
+    /// <summary>
+    /// 版本升级：旧配置按字段补齐后写回，而不是当成损坏文件备份重建。
+    /// 版本比程序还新时只提示，不覆盖 —— 免得降级运行时把用户的新配置冲掉。
+    /// </summary>
+    private static void UpgradeIfNeeded(AppConfig config, string path)
+    {
+        var version = config.Version <= 0 ? 1 : config.Version;
+
+        if (version > AppConfig.CurrentVersion)
+        {
+            Logging.Warn($"config.json 版本 {version} 高于当前程序支持的 {AppConfig.CurrentVersion}，将按原样使用且不回写");
+            return;
+        }
+
+        if (version == AppConfig.CurrentVersion)
+        {
+            return;
+        }
+
+        if (version < 2)
+        {
+            // v1 → v2：新增 smtc 节点（老配置没有这个字段，补默认值即可）；
+            // 原 smtcMode 只有 off / idle，语义不变。
+            config.Smtc ??= new SmtcConfig();
+            Logging.Info("config.json 从 v1 升级到 v2（新增 SMTC 独立上报配置）");
+        }
+
+        config.Version = AppConfig.CurrentVersion;
+        config.Normalize();
+
+        try
+        {
+            File.WriteAllText(path, Serialize(config), new UTF8Encoding(false));
+            Logging.Info($"config.json 已升级并写回（v{AppConfig.CurrentVersion}）");
+        }
+        catch (Exception ex)
+        {
+            Logging.Warn($"升级后的配置写回失败，本次仍按新结构运行: {ex.Message}");
+        }
     }
 
     /// <summary>文件不存在时写一份默认配置。两个进程都可能调用，所以用 CreateNew 保证幂等。</summary>

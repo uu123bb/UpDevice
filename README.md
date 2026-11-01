@@ -107,6 +107,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 
 ```jsonc
 {
+  "version": 2,                        // 配置结构版本，旧版本会自动升级
   "reportingEnabled": true,            // 开始 / 停止上报
   "remote": {
     "serverUrl": "https://sleepy.example.com",
@@ -118,12 +119,17 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
     "intervalSeconds": 5,              // 上报间隔（秒）
     "onlyOnChange": true,              // 不重复上报：仅状态变化时发送
     "statusFormat": "window",          // process | window | window+process | process+window
-    "smtcMode": "idle",                // off | idle
+    "smtcMode": "idle",                // off | idle | separate
     "idleTimeoutSeconds": 120,         // 0 表示禁用待机判定
     "controllerEnabled": false,
     "controllerAll": false,
     "controllerDeadzone": 0.10,
     "portableMode": false
+  },
+  "smtc": {                            // smtcMode = separate 时使用
+    "deviceId": "",                    // 不能与本机 deviceId 相同
+    "showName": "",
+    "pendingRemoveId": ""              // 内部字段：待删除的旧 SMTC 设备
   },
   "texts": {
     "shutdown": "设备关闭",
@@ -134,6 +140,14 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 ```
 
 `config.json` 中含 `secret`，**不纳入版本控制**，已加入 `.gitignore`。
+
+### 配置版本升级
+
+配置带 `version` 字段，加载时自动升级，**不会因为缺字段被当成损坏文件**：
+
+- 没有 `version` 的旧文件按 v1 处理，补齐新字段后写回，日志会打印「从 v1 升级到 v2」。
+- `version` 比程序还新时只提示、不回写 —— 免得降级运行时把用户的新配置冲掉。
+- 只有 JSON 真的解析失败才会备份成 `config.json.invalid-<时间戳>` 并重建。
 
 ### 状态判定与上报规则
 
@@ -164,6 +178,24 @@ workbuddy.exe（WorkBuddy）
 - 进程名带扩展名（`workbuddy.exe`），取不到映像名时退回 `ProcessName + .exe`。
 - SMTC 只认网易云音乐（`NetEase`）与 QQ 音乐（`QQ Music`），格式为 `歌手 - 歌曲（来源）`，无歌手时只显示歌曲。
 - 关机与离线通过上报接口置 `using=false`，不调用 device/remove，设备仍留在页面上。
+
+### SMTC 单独上报成一个设备
+
+`smtcMode = separate` 时，播放信息不再写进本设备，而是作为**第二个设备**独立上报，需要额外填 `smtc.deviceId` 与 `smtc.showName`。
+
+| SMTC 状态 | 该设备 `using` | 文案 |
+| --- | --- | --- |
+| 正在播放，且本机不在待机 | `true` | `歌手 - 歌曲（NetEase）` |
+| 暂停播放 | `false` | 保留歌曲信息，不移除 |
+| 没有受支持的会话 | `false` | `待机` |
+| 本机判定为待机 | `false` | 保留最后一次的播放信息，不管是否在播 |
+
+- 两个设备各自去重、各自上报，互不干扰。
+- `smtc.deviceId` 不能与本机 `deviceId` 相同，否则跳过
+  并打一条警告（否则会把主设备覆盖掉）。
+- 关闭该选项（或修改 `smtc.deviceId`）并保存时，托盘会把旧设备 ID 写进
+  `smtc.pendingRemoveId`，由主进程调用 `device/remove` 删除，**删除成功才清除标记** ——
+  因此主进程当时没运行也没关系，下次启动会补删。
 
 ### 配置文件由程序自举
 

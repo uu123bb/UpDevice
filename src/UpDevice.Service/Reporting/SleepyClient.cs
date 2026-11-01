@@ -145,6 +145,67 @@ public sealed class SleepyClient : IDisposable
         }
     }
 
+    /// <summary>移除一个设备（关闭 SMTC 单独上报时用）。设备本来就不存在也算成功。</summary>
+    public async Task<bool> RemoveDeviceAsync(RemoteConfig remote, string deviceId, CancellationToken token)
+    {
+        var baseUrl = SleepyApi.NormalizeBaseUrl(remote.ServerUrl);
+        if (baseUrl.Length == 0 || string.IsNullOrWhiteSpace(deviceId))
+        {
+            return false;
+        }
+
+        var flavor = await ResolveFlavorAsync(baseUrl, token).ConfigureAwait(false);
+        if (flavor == SleepyApiFlavor.Unknown)
+        {
+            return false;
+        }
+
+        var url = $"{baseUrl}{SleepyApi.DeviceRemovePath(flavor)}?id={Uri.EscapeDataString(deviceId)}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (!string.IsNullOrEmpty(remote.Secret))
+        {
+            request.Headers.TryAddWithoutValidation("Sleepy-Secret", remote.Secret);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", remote.Secret);
+        }
+
+        try
+        {
+            using var response = await _http.SendAsync(request, token).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+
+            // 404 说明设备已经不在了，目的已经达成。
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return true;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Logging.Warn($"删除设备 {deviceId} 失败 (HTTP {(int)response.StatusCode}): {Trim(body)}");
+                return false;
+            }
+
+            if (!IsSuccess(body))
+            {
+                Logging.Warn($"删除设备 {deviceId} 未成功: {Trim(body)}");
+                return false;
+            }
+
+            Logging.Info($"已删除设备 {deviceId}");
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Logging.Warn($"删除设备 {deviceId} 请求失败: {ex.GetBaseException().Message}");
+            return false;
+        }
+    }
+
     private async Task<SleepyApiFlavor> ResolveFlavorAsync(string baseUrl, CancellationToken token)
     {
         if (_flavor != SleepyApiFlavor.Unknown && _flavorBaseUrl == baseUrl)

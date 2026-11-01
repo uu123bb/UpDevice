@@ -217,8 +217,17 @@
           <select id="smtcMode">
             <option value="off">不上报</option>
             <option value="idle">仅在待机时上报</option>
+            <option value="separate">单独上报成一个设备</option>
           </select>
         </div>
+      </div>
+      <div class="row" id="rowSmtcShowName">
+        <div class="label">SMTC 设备名称<small>上报 SMTC 信息时的设备名</small></div>
+        <div class="control"><input id="smtcShowName" type="text" /></div>
+      </div>
+      <div class="row" id="rowSmtcDeviceId">
+        <div class="label">SMTC 设备 ID<small>上报 SMTC 信息时的设备 ID，不能和设备的设备 ID 相同</small></div>
+        <div class="control"><input id="smtcDeviceId" type="text" /></div>
       </div>
       <div class="row">
         <div class="label">超时时间<small>超过该时间无输入即视为待机，0 表示禁用</small></div>
@@ -324,6 +333,8 @@
       setChecked(el("onlyOnChange"), cfg.report.onlyOnChange);
       el("statusFormat").value = cfg.report.statusFormat;
       el("smtcMode").value = cfg.report.smtcMode;
+      el("smtcShowName").value = cfg.smtc?.showName || "";
+      el("smtcDeviceId").value = cfg.smtc?.deviceId || "";
       el("idleTimeoutSeconds").value = cfg.report.idleTimeoutSeconds;
       setChecked(el("controllerEnabled"), cfg.report.controllerEnabled);
       setChecked(el("controllerAll"), cfg.report.controllerAll);
@@ -352,6 +363,11 @@
       el("rowBatteryOnAc").hidden = !portable;
       el("textBatteryOnBattery").disabled = !portable;
       el("textBatteryOnAc").disabled = !portable;
+
+      // 「单独上报成一个设备」时才显示 SMTC 设备名与设备 ID
+      const separate = el("smtcMode").value === "separate";
+      el("rowSmtcShowName").hidden = !separate;
+      el("rowSmtcDeviceId").hidden = !separate;
     }
 
     function collect() {
@@ -379,6 +395,10 @@
           batteryOnBattery: el("textBatteryOnBattery").value,
           batteryOnAc: el("textBatteryOnAc").value,
         },
+        smtc: {
+          deviceId: el("smtcDeviceId").value.trim(),
+          showName: el("smtcShowName").value.trim(),
+        },
       };
     }
 
@@ -390,6 +410,7 @@
 
     el("controllerEnabled").addEventListener("change", applyDependencies);
     el("portableMode").addEventListener("change", applyDependencies);
+    el("smtcMode").addEventListener("change", applyDependencies);
 
     el("controllerDeadzoneRange").addEventListener("input", (event) => {
       el("controllerDeadzone").value = Number(event.target.value).toFixed(2);
@@ -399,10 +420,24 @@
     });
 
     el("btnSave").addEventListener("click", async () => {
+      const payload = collect();
+
+      // 单独上报时设备 ID / 名称必填，且不能与本机设备 ID 撞车
+      if (payload.report.smtcMode === "separate") {
+        if (!payload.smtc.deviceId || !payload.smtc.showName) {
+          toast("单独上报需要填写 SMTC 设备名称与设备 ID");
+          return;
+        }
+        if (payload.smtc.deviceId === payload.remote.deviceId) {
+          toast("SMTC 设备 ID 不能和设备的设备 ID 相同");
+          return;
+        }
+      }
+
       const result = await api("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(collect()),
+        body: JSON.stringify(payload),
       });
       toast(result.message || "已保存");
       await refresh();
