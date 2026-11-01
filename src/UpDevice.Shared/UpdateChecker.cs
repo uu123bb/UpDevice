@@ -12,7 +12,9 @@ public sealed record UpdateCheckResult(
     string? ReleaseUrl,
     string? PublishedAt,
     string? AssetName,
-    long? AssetSize);
+    long? AssetSize,
+    string? AssetUrl = null,
+    string? AssetDigest = null);
 
 /// <summary>
 /// 通过 GitHub Releases 检查更新（只查不装 —— 真正替换文件由启动器负责）。
@@ -65,6 +67,8 @@ public static class UpdateChecker
 
             string? assetName = null;
             long? assetSize = null;
+            string? assetUrl = null;
+            string? assetDigest = null;
             if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
             {
                 foreach (var asset in assets.EnumerateArray())
@@ -76,6 +80,8 @@ public static class UpdateChecker
                     }
 
                     assetName = name;
+                    assetUrl = GetString(asset, "browser_download_url");
+                    assetDigest = GetString(asset, "digest");
                     if (asset.TryGetProperty("size", out var size) && size.TryGetInt64(out var value))
                     {
                         assetSize = value;
@@ -89,7 +95,9 @@ public static class UpdateChecker
                 ? $"发现新版本 {tag}{(isPrerelease ? "（预发布）" : string.Empty)}"
                 : $"已是最新版本（{current}）";
 
-            return new UpdateCheckResult(true, message, current, tag, hasUpdate, releaseUrl, publishedAt, assetName, assetSize);
+            return new UpdateCheckResult(
+                true, message, current, tag, hasUpdate, releaseUrl, publishedAt,
+                assetName, assetSize, assetUrl, assetDigest);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {

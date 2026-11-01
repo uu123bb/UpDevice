@@ -16,6 +16,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 | 项目 | 角色 | 职责 |
 | --- | --- | --- |
+| `UpDevice.Launcher` | 启动器 | 拉起托盘、检查并安装更新（整包替换 `UpDevice/` 目录） |
 | `UpDevice.Service` | 主进程 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
 | `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制主进程启停、展示上报状态 |
 
@@ -59,6 +60,27 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
                  │
         UpDevice.Tray  ◀────── 浏览器访问 127.0.0.1:port 修改配置
 ```
+
+## 启动器
+
+`UpDevice.Launcher.exe` 也在根目录，同样要求管理员权限 —— 拉起托盘时不会再多弹一次 UAC。
+
+界面很小：版本、状态、日志，加四个按钮（启动 / 检查更新 / 打开配置页 / 退出）。启动时自动拉起托盘，并按配置里的 `update.enabled` 静默检查一次更新。
+
+更新流程：
+
+```
+检查 releases/latest → 有新版本就提示 → 下载 zip
+  → 校验 SHA256（用 Release 里的 digest）
+  → 解压到 UpDevice.new
+  → 通知主进程上报离线并退出，等托盘与主进程结束（超时则强杀）
+  → 旧目录改名 UpDevice.old，新目录就位，删除备份
+  → 重新拉起托盘
+```
+
+之所以能整目录替换，是因为程序都装在 `UpDevice/` 子目录里，而更新器本体在外面，不会被自己覆盖。
+
+**已知限制**：启动器自身不参与自动更新 —— 它比 `UpDevice/` 里的程序更新得慢，只有手动替换或重装才会升级。版本号取自 `UpDevice/version.txt`，所以「当前版本」始终反映程序目录里的版本，不会因为启动器没换而失真。
 
 ## 与 sleepy 服务端的对接
 
@@ -240,6 +262,7 @@ UpDevice/
 │   │   ├── AppVersion.cs          # 版本号读取与解析
 │   │   ├── UpdateChecker.cs       # GitHub Release 检查
 │   │   ├── SiblingProcess.cs      # 互相拉起
+│   │   ├── Ipc.cs                 # 向主进程发指令（启动器与托盘共用）
 │   │   ├── SleepyApi.cs           # V4 / V5 接口差异
 │   │   └── Logging.cs
 │   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口
@@ -248,14 +271,18 @@ UpDevice/
 │   │   ├── Capture/               # 前台窗口、空闲、控制器、电池、屏蔽规则
 │   │   ├── Media/                 # SMTC 播放信息
 │   │   └── Reporting/             # sleepy 客户端与上报循环
-│   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置
+│   ├── UpDevice.Tray/             # 托盘 + 本地 Web 配置
 │       ├── Program.cs             # 单实例、启动 Web 服务与托盘
 │       ├── TrayContext.cs         # 托盘图标与菜单
 │       ├── TrayWebHost.cs         # 回环 Web 服务与接口
-│       ├── Ipc.cs                 # 向主进程发指令
 │       ├── Autostart.cs           # 托盘开机自启（Run 键）
 │       ├── ScheduledTask.cs       # 主进程计划任务（schtasks）
 │       ├── Web/index.html         # 配置页
+│       └── app.manifest           # requireAdministrator
+│   └── UpDevice.Launcher/         # 启动器
+│       ├── Program.cs
+│       ├── LauncherForm.cs        # 小窗口：版本、状态、日志、按钮
+│       ├── Updater.cs             # 下载 / 校验 / 替换目录
 │       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
 ├── Directory.Build.props          # 统一版本号（CI 用 tag 覆盖）
@@ -345,15 +372,16 @@ dotnet publish src/UpDevice.Tray    -c Release -o publish
 
 ## 目录形态与配置位置
 
-正式分发是一个「启动器 + 程序目录」的结构（`UpDevice.Launcher.exe` 尚未实现，规划中）：
+正式分发是「启动器 + 程序目录」的结构：
 
 ```
 UpDevice/
-├── UpDevice.Launcher.exe     # 启动器：拉起托盘，将来负责自动更新
+├── UpDevice.Launcher.exe     # 启动器：拉起托盘、检查并安装更新
 ├── config.json               # 配置放在启动器旁边
 └── UpDevice/                 # 程序目录，整包更新时会被替换
     ├── UpDevice.Service.exe
-    └── UpDevice.Tray.exe
+    ├── UpDevice.Tray.exe
+    └── version.txt           # 当前版本（CI 写入，启动器靠它判断新旧）
 ```
 
 `config.json` **必须放在程序目录外面**：自动更新会整目录替换 `UpDevice/`，放在里面每次更新都会冲掉 server 和 secret。
@@ -378,10 +406,11 @@ UpDevice/
 打包细节：
 
 - 以 `win-x64`、**self-contained** 方式发布，用户不需要预装 .NET 10 运行时。
-- 两个程序发布到同一个 `publish/` 目录，一起压进 `UpDevice-<版本>-win-x64.zip`。
-- 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
+- 压缩包内是启动器布局：`UpDevice.Launcher.exe` + `UpDevice/` 子目录（两个程序）。
+- 打包时写入 `UpDevice/version.txt`，启动器与托盘都靠它报告当前版本。
 - **版本号由 tag 注入**：`v1.0.1.1` → `-p:Version=1.0.1.1`；非 tag 构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
-- 当前体积约 68 MB（压缩后）。
+- 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
+- 代价说明：启动器与程序各自 self-contained，运行时会重复一份，包体因此偏大（约 120 MB）。若要缩小更新包，可改为框架依赖 + 要求预装 .NET 10 桌面运行时。
 
 ChangeLog 用 GitHub 原生的 release notes 生成，分类规则写在 `.github/release.yml`（新功能 / 问题修复 / 文档与构建 / 其他）。
 
@@ -417,7 +446,8 @@ docs: 更新使用说明
 - [x] 退出托盘并停止上报（上报 `[设备已停止上报]` 后一起结束）
 - [x] GitHub Actions：构建、打包 ZIP、Release 与 ChangeLog
 - [x] 自动更新：检查 GitHub 最新 Release（配置页「自动更新」选项卡）
-- [ ] 启动器 `UpDevice.Launcher.exe`：拉起程序、下载并整包替换 `UpDevice/`
+- [x] 启动器 `UpDevice.Launcher.exe`：拉起程序、下载并整包替换 `UpDevice/`
+- [ ] 启动器自身更新（目前只随手动替换升级）
 - [ ] 首次运行引导（检测到未配置时自动打开配置页）
 - [ ] 计划任务的真实环境验证（沙箱内 `schtasks` 被禁用，仅验证了未就绪时的报错路径）
 
