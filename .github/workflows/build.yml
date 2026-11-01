@@ -88,7 +88,18 @@ jobs:
           if (Test-Path publish/config.json) { Remove-Item publish/config.json -Force }
 
           Write-Host "启动器: $((Get-ChildItem publish -Filter *.exe).Name -join ', ')"
-          Write-Host "程序目录: $((Get-ChildItem publish/app-* -Filter *.exe).Name -join ', ')"
+
+          # 程序在 app-<版本>-<序号>/ 里；注意不能写 Get-ChildItem publish/app-* -Filter，
+          # 路径带通配符时 -Filter 不生效，会静默返回空。
+          $appDir = Get-ChildItem -Path publish -Directory | Where-Object { $_.Name -like "app-*" } | Select-Object -First 1
+          if ($appDir) {
+            $appExe = Get-ChildItem -Path $appDir.FullName -Filter *.exe | Select-Object -ExpandProperty Name
+            Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
+          } else {
+            Write-Host "程序目录: (未找到 app-* 目录)" -ForegroundColor Red
+            throw "打包目录结构不正确：缺少 app-* 目录"
+          }
+
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
       - name: 打包 ZIP
