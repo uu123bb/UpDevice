@@ -1,4 +1,6 @@
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -160,9 +162,22 @@ internal sealed class TrayWebHost
                 return Results.Json(new { ok = false, message = "请先填写远端 Sleepy 实例地址" });
             }
 
-            var serverUrl = NormalizeUrl(rawUrl);
-            var result = await ProbeAsync(serverUrl, secret);
-            return Results.Json(new { ok = result.Ok, message = result.Message, serverUrl });
+            var serverUrl = SleepyApi.NormalizeUrl(rawUrl);
+            var probe = await SleepyApi.ProbeAsync(serverUrl, CancellationToken.None);
+            if (!probe.Ok)
+            {
+                return Results.Json(new { ok = false, message = probe.Message, serverUrl });
+            }
+
+            var message = $"连接成功：{probe.Message}";
+
+            if (secret.Length > 0)
+            {
+                var (secretOk, secretMessage) = await VerifySecretAsync(serverUrl, probe.Flavor, secret);
+                return Results.Json(new { ok = secretOk, message = $"{message}；{secretMessage}", serverUrl });
+            }
+
+            return Results.Json(new { ok = true, message, serverUrl });
         });
     }
 
@@ -180,91 +195,39 @@ internal sealed class TrayWebHost
         }
     }
 
-    /// <summary>探测 sleepy 的可用接口，顺带把版本号带回来。</summary>
-    private static async Task<(bool Ok, string Message)> ProbeAsync(string serverUrl, string secret)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        var probes = new[] { "/api/meta", "/api/status/query" };
-        var errors = new List<string>();
-
-        foreach (var path in probes)
-        {
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, serverUrl.TrimEnd('/') + path);
-                if (secret.Length > 0)
-                {
-                    request.Headers.TryAddWithoutValidation("Sleepy-Secret", secret);
-                }
-
-                using var response = await http.SendAsync(request);
-                var text = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    errors.Add($"{path} → HTTP {(int)response.StatusCode}");
-                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                    {
-                        return (false, "密钥不正确（服务端返回 401），请检查 SECRET");
-                    }
-
-                    continue;
-                }
-
-                var version = ExtractVersion(text);
-                return (true, version is null
-                    ? $"连接成功，接口 {path} 可用"
-                    : $"连接成功，接口 {path} 可用，服务端版本 {version}");
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"{path} → {ex.GetBaseException().Message}");
-            }
-        }
-
-        return (false, "连接失败：" + string.Join("；", errors));
-    }
-
-    private static string? ExtractVersion(string json)
+    /// <summary>
+    /// 校验 secret，且不产生副作用：故意发一个空请求体。
+    /// 服务端会先验密钥（错误 → 401），再校验参数（缺字段 → 400），
+    /// 所以拿到 400 就说明密钥是对的，同时什么也没写进去。
+    /// </summary>
+    private static async Task<(bool Ok, string Message)> VerifySecretAsync(
+        string serverUrl,
+        SleepyApiFlavor flavor,
+        string secret)
     {
         try
         {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-
-            if (root.TryGetProperty("version_str", out var versionString))
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, serverUrl + SleepyApi.DeviceSetPath(flavor))
             {
-                return versionString.GetString();
-            }
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Sleepy-Secret", secret);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
 
-            if (root.TryGetProperty("meta", out var meta)
-                && meta.ValueKind == JsonValueKind.Object
-                && meta.TryGetProperty("version", out var metaVersion))
+            using var response = await http.SendAsync(request);
+            return response.StatusCode switch
             {
-                return metaVersion.GetString();
-            }
+                System.Net.HttpStatusCode.Unauthorized => (false, "密钥不正确（服务端返回 401）"),
+                System.Net.HttpStatusCode.BadRequest => (true, "密钥校验通过"),
+                System.Net.HttpStatusCode.OK => (true, "密钥校验通过"),
+                _ => (true, $"密钥校验返回 HTTP {(int)response.StatusCode}，请在首次上报时留意日志"),
+            };
         }
-        catch
+        catch (Exception ex)
         {
-            // 不是 JSON 就算了，能连上比解析版本重要。
+            return (false, $"密钥校验失败：{ex.GetBaseException().Message}");
         }
-
-        return null;
-    }
-
-    /// <summary>补全协议头：本机地址默认 http，其余默认 https。</summary>
-    private static string NormalizeUrl(string url)
-    {
-        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            return url;
-        }
-
-        var isLocal = url.StartsWith("localhost", StringComparison.OrdinalIgnoreCase)
-            || url.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase);
-
-        return (isLocal ? "http://" : "https://") + url;
     }
 
     /// <summary>保存前先克隆一份，避免直接改到正在被主进程读取的实例。</summary>

@@ -26,7 +26,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 名字叫 Service，但**它不是 Windows 服务（SCM）**，而是一个普通的桌面进程，只是没有可见界面：
 
 - 在用户交互式会话内运行 —— 前台窗口、空闲状态这些信息只有在交互式会话里才拿得到，会话 0 的服务进程取到的永远是空。
-- 持有一个**隐藏窗口**用于接收系统消息，例如关机/注销前的 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，以便在退出前把状态收尾（如调用 `/api/device/remove` 下线本设备）。
+- 持有一个**隐藏窗口**用于接收系统消息，例如关机/注销前的 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，以便在退出前把状态收尾（上报离线，但保留设备）。
 - 同时承担与托盘的 IPC：托盘通过窗口消息或命名管道通知它重载配置、暂停采集。
 
 > 注意：隐藏窗口必须是**普通顶层窗口**（`ShowInTaskbar = false`），不能用消息专用窗口（`HWND_MESSAGE`）。消息专用窗口收不到 `WM_QUERYENDSESSION` 这类广播消息，用它就永远等不到关机通知。
@@ -53,7 +53,7 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
    前台窗口 / 空闲状态 / config.json
                  │
                  ▼
-        UpDevice.Service ────── POST /api/device/set ──────▶ sleepy
+        UpDevice.Service ────── 上报设备状态 ──────▶ sleepy
                  ▲
                  │ 读取 config.json
                  │
@@ -62,23 +62,31 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ## 与 sleepy 服务端的对接
 
-上报接口（详见 [sleepy API 文档](https://github.com/sleepy-project/sleepy/blob/main/doc/api.md)）：
+sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`，通得过就是 V4；否则再试 `/api/status/query`，通得过就是 V5。识别结果会缓存，中途发现 404 会自动换另一套重试。
 
-- **端点**：`POST /api/device/set`
-- **请求体**：
+| | V4（sleepy 4.x / serverless 分支） | V5（FastAPI 重构版） |
+| --- | --- | --- |
+| 查询 | `GET /query` | `GET /api/status/query` |
+| 上报 | `POST /device/set` | `POST /api/device/set` |
+| 移除 | `GET /device/remove` | `GET /api/device/remove` |
+| 设备字段 | `app_name` | `status` |
+
+> 注意：V4 **没有 `/api` 前缀，也没有 `/meta` 路由**。测试连接千万不要去打 `/api/meta`，那个接口不存在。
+
+上报请求体会同时带 `app_name` 与 `status` 两个字段，服务端会忽略不认识的那个，这样一套代码两套接口都能用：
 
 ```jsonc
 {
   "id": "device-1",        // 设备标识符
   "show_name": "MyDevice", // 设备显示名称
   "using": true,           // 是否正在使用
-  "status": "VSCode"       // 状态文本，通常是当前应用名
+  "app_name": "VSCode",    // V4 字段
+  "status": "VSCode"       // V5 字段
 }
 ```
 
-- **鉴权**：需与服务端 `SLEEPY_SECRET` 一致。支持 `Sleepy-Secret` 请求头、`Authorization: Bearer <secret>`、请求体 `secret` 字段等方式，本客户端使用请求头。
-
-设备下线可用 `GET /api/device/remove?id=<device_id>`（需鉴权），在收到关机消息或用户退出时调用。
+- **鉴权**：需与服务端 `SLEEPY_SECRET` 一致。支持 `Sleepy-Secret` 请求头、`Authorization: Bearer <secret>`、请求体 `secret` 字段、`?secret=` 查询参数等方式，本客户端同时带请求头与 Bearer。
+- **测试连接的密钥校验**：故意发一个空请求体 `{}`。服务端先验密钥（错误 → 401）再校验参数（缺字段 → 400），所以拿到 400 就说明密钥正确，且不会写入任何设备数据。
 
 ## 技术栈
 
@@ -155,7 +163,7 @@ workbuddy.exe（WorkBuddy）
 - 上报形式：`进程名`、`窗口名`、`窗口名（进程名）`、`进程名（窗口名）`，括号用全角。
 - 进程名带扩展名（`workbuddy.exe`），取不到映像名时退回 `ProcessName + .exe`。
 - SMTC 只认网易云音乐（`NetEase`）与 QQ 音乐（`QQ Music`），格式为 `歌手 - 歌曲（来源）`，无歌手时只显示歌曲。
-- 关机与离线通过 `/api/device/set` 置 `using=false`，不调用 `/api/device/remove`，设备仍留在页面上。
+- 关机与离线通过上报接口置 `using=false`，不调用 device/remove，设备仍留在页面上。
 
 ### 配置文件由程序自举
 
@@ -227,7 +235,7 @@ UpDevice/
 | `POST /api/config` | 保存配置并通知主进程 `reload` |
 | `POST /api/reporting` | 开始 / 停止上报 |
 | `POST /api/task` | 启用 / 禁用计划任务 |
-| `POST /api/test` | 探测远端实例：先试 `/api/meta`，再退到 `/api/status/query` |
+| `POST /api/test` | 探测远端实例（先 `/query`，再退到 `/api/status/query`），并可校验密钥 |
 
 计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Service`，指向同目录的 `UpDevice.Service.exe`。
 

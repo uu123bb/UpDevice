@@ -68,6 +68,8 @@
 
     .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; }
     .row + .row { border-top: 1px dashed var(--line); }
+    /* 条件未满足时整行隐藏；.row 的 display:flex 会盖掉 [hidden]，所以要显式覆盖 */
+    .row[hidden] { display: none !important; }
     .row .label { flex: 0 0 auto; max-width: 52%; }
     .row .label small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 2px; }
     .row .control { flex: 1 1 auto; display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
@@ -84,6 +86,7 @@
     }
 
     input[type="range"] { width: 190px; accent-color: var(--accent); }
+    input:disabled, select:disabled { opacity: .45; }
 
     button {
       font: inherit;
@@ -227,13 +230,13 @@
           <label class="switch"><input id="controllerEnabled" type="checkbox" /><span></span></label>
         </div>
       </div>
-      <div class="row">
+      <div class="row" id="rowControllerAll">
         <div class="label">获取所有控制器<small>默认只读取 1 号与 2 号</small></div>
         <div class="control">
           <label class="switch"><input id="controllerAll" type="checkbox" /><span></span></label>
         </div>
       </div>
-      <div class="row">
+      <div class="row" id="rowControllerDeadzone">
         <div class="label">控制器死区<small>避免零死区设备空闲时被当作输入</small></div>
         <div class="control">
           <input id="controllerDeadzoneRange" type="range" min="0" max="1" step="0.01" />
@@ -254,11 +257,11 @@
         <div class="label">设备关机时</div>
         <div class="control"><input id="textShutdown" type="text" /></div>
       </div>
-      <div class="row">
+      <div class="row" id="rowBatteryOnBattery">
         <div class="label">电池状态 · 使用电池<small>%battery% 会替换为电量</small></div>
         <div class="control"><input id="textBatteryOnBattery" type="text" /></div>
       </div>
-      <div class="row">
+      <div class="row" id="rowBatteryOnAc">
         <div class="label">电池状态 · 连接电源<small>%battery% 会替换为电量</small></div>
         <div class="control"><input id="textBatteryOnAc" type="text" /></div>
       </div>
@@ -336,12 +339,17 @@
     }
 
     function applyDependencies() {
+      // 前置条件不满足时整行隐藏，而不是只置灰 —— 界面只留当前可用的选项
       const controller = el("controllerEnabled").checked;
+      el("rowControllerAll").hidden = !controller;
+      el("rowControllerDeadzone").hidden = !controller;
       el("controllerAll").disabled = !controller;
       el("controllerDeadzone").disabled = !controller;
       el("controllerDeadzoneRange").disabled = !controller;
 
       const portable = el("portableMode").checked;
+      el("rowBatteryOnBattery").hidden = !portable;
+      el("rowBatteryOnAc").hidden = !portable;
       el("textBatteryOnBattery").disabled = !portable;
       el("textBatteryOnAc").disabled = !portable;
     }
