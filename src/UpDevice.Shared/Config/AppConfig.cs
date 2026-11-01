@@ -65,6 +65,7 @@ public sealed class AppConfig
         Update.Repository = string.IsNullOrWhiteSpace(Update.Repository) ? "uu123bb/UpDevice" : Update.Repository.Trim();
 
         Texts.Shutdown = string.IsNullOrWhiteSpace(Texts.Shutdown) ? "设备关闭" : Texts.Shutdown;
+        Texts.Desktop = string.IsNullOrWhiteSpace(Texts.Desktop) ? "桌面" : Texts.Desktop;
         Texts.BatteryOnBattery = string.IsNullOrWhiteSpace(Texts.BatteryOnBattery) ? "未在充电 %battery%" : Texts.BatteryOnBattery;
         Texts.BatteryOnAc = string.IsNullOrWhiteSpace(Texts.BatteryOnAc) ? "正在充电 %battery%" : Texts.BatteryOnAc;
     }
@@ -121,6 +122,9 @@ public sealed class TextConfig
 {
     /// <summary>设备关机时上报的状态文案。</summary>
     public string Shutdown { get; set; } = "设备关闭";
+
+    /// <summary>前台是桌面时的状态文案（仍然算在线，只是换个说法）。</summary>
+    public string Desktop { get; set; } = "桌面";
 
     /// <summary>使用电池时的文案，%battery% 会替换为电量。</summary>
     public string BatteryOnBattery { get; set; } = "未在充电 %battery%";

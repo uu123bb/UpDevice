@@ -229,12 +229,9 @@ public sealed class Reporter : IDisposable
     /// <summary>按当前各项采集结果算出要上报的状态。</summary>
     public (bool Using, string Status) Compose(AppConfig config)
     {
-        // 文案看「有没有前台应用」：锁屏、桌面、抓不到窗口都显示待机。
-        // 而在不在线只看空闲时间（锁屏除外）—— 坐在桌面上等任务不该被判离线。
-        var noApp = _foreground.IsLocked || _foreground.IsDesktop || _foreground.Current.IsEmpty;
+        // 文案按「有没有前台应用」分派；在不在线只看空闲时间（锁屏除外）。
         var idle = IsDeviceIdle(config);
-
-        var core = noApp ? ComposeIdle(config) : ComposeActive(config);
+        var core = ComposeText(config);
 
         var prefix = string.Empty;
         if (config.Report.PortableMode && _battery.Format(config.Texts) is { } batteryText)
@@ -243,6 +240,38 @@ public sealed class Reporter : IDisposable
         }
 
         return (!idle, prefix + core);
+    }
+
+    private string ComposeText(AppConfig config)
+    {
+        if (_foreground.IsLocked)
+        {
+            return ComposeIdle(config);
+        }
+
+        if (_foreground.IsDesktop)
+        {
+            // 桌面有自己的文案，但仍然可能在线 —— 在桌面等任务不该显示成待机。
+            return ComposeDesktop(config);
+        }
+
+        if (_foreground.Current.IsEmpty)
+        {
+            // 前台窗口暂时取不到（例如刚登录、正在切换会话）。
+            return ComposeIdle(config);
+        }
+
+        return ComposeActive(config);
+    }
+
+    private string ComposeDesktop(AppConfig config)
+    {
+        if (config.Report.SmtcMode == SmtcModes.Idle && _smtc.Current is { IsPlaying: true } playing)
+        {
+            return FormatNowPlaying(playing);
+        }
+
+        return string.IsNullOrWhiteSpace(config.Texts.Desktop) ? "桌面" : config.Texts.Desktop;
     }
 
     private string ComposeIdle(AppConfig config)
@@ -351,7 +380,9 @@ public sealed class Reporter : IDisposable
             _lastForegroundText = text;
         }
 
-        if (config.Report.ControllerEnabled && _activity.SecondsSinceControllerInput() <= ControllerActiveSeconds)
+        // 手柄插着就一直挂着标识 —— 加载画面里几十秒没输入很常见，按「最近 10 秒有输入」算会闪。
+        if (config.Report.ControllerEnabled
+            && (_activity.ControllerConnected || _activity.SecondsSinceControllerInput() <= ControllerActiveSeconds))
         {
             text += ControllerInUseText;
         }
