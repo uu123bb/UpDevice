@@ -13,4 +13,8 @@
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\UpDevice.Shared\UpDevice.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

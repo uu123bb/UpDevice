@@ -82,10 +82,11 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ## 技术栈
 
-- 语言 / 运行时：C# / .NET 10（`net10.0-windows`）
-- 托盘程序：WinForms（`UseWindowsForms`）
+- 语言 / 运行时：C# / .NET 10（主进程与托盘为 `net10.0-windows10.0.19041.0`，共享库为 `net10.0`）
+- 托盘程序：WinForms（`UseWindowsForms`）+ `NotifyIcon`
 - 主进程隐藏窗口：WinForms `NativeWindow` 承载消息循环
 - 配置界面：内嵌 ASP.NET Core Web 服务（Kestrel + 最小 API），仅绑定 `127.0.0.1`
+- 计划任务：`schtasks`（`ONLOGON` + `HIGHEST`）
 - 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
 - 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
 - 启动方式：计划任务（登录触发）拉起主进程
@@ -128,15 +129,33 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 ### 状态判定与上报规则
 
-| 情形 | `using` | `status` |
-| --- | --- | --- |
-| 有键鼠或控制器输入 | `true` | 按「上报形式」拼接的前台信息 |
-| 超过超时时间无输入（待机） | `false` | 保留最后一次前台信息；若 SMTC 正在播放则用播放信息覆盖；便携模式下用电池文案 |
-| 收到关机 / 注销信号 | `false` | 「设备关机时」文案（默认 `设备关闭`），**不删除设备** |
+状态文案由「前缀 + 核心」组成，前缀是便携模式下的电池状态，核心随设备状态变化：
 
-- 前台信息按「上报形式」拼接：`窗口名`、`进程名`、`窗口名 (进程名)`、`进程名 (窗口名)`。
-- SMTC 只认网易云音乐与 QQ 音乐，其他播放器忽略；文案形如 `网易云音乐 - 歌曲名`。
-- 关机时调用 `/api/device/set` 置为离线，不调用 `/api/device/remove`，设备仍留在页面上。
+| 情形 | `using` | 核心内容 |
+| --- | --- | --- |
+| 有键鼠或控制器输入 | `true` | 按「上报形式」拼接的前台信息，控制器活跃时追加 `（正在使用控制器）` |
+| 超过超时时间无输入 | `false` | `待机`；若 SMTC 正在播放且开启「仅在待机时上报」，则用播放信息替代 |
+| 收到关机 / 注销信号 | `false` | 关机文案，整体用方括号包裹，**不删除设备** |
+
+实际文案示例（`show_name` 由服务端拼在冒号前，不属于 `status`）：
+
+```
+workbuddy.exe
+WorkBuddy
+WorkBuddy（workbuddy.exe）
+workbuddy.exe（WorkBuddy）
+待机
+泠鸢yousa - 一梦千霄（NetEase）
+[未在充电 98%]WorkBuddy
+[正在充电 50%]泠鸢yousa - 一梦千霄（NetEase）
+[正在充电 50%]American Truck Simulator（正在使用控制器）
+[设备关闭]
+```
+
+- 上报形式：`进程名`、`窗口名`、`窗口名（进程名）`、`进程名（窗口名）`，括号用全角。
+- 进程名带扩展名（`workbuddy.exe`），取不到映像名时退回 `ProcessName + .exe`。
+- SMTC 只认网易云音乐（`NetEase`）与 QQ 音乐（`QQ Music`），格式为 `歌手 - 歌曲（来源）`，无歌手时只显示歌曲。
+- 关机与离线通过 `/api/device/set` 置 `using=false`，不调用 `/api/device/remove`，设备仍留在页面上。
 
 ### 配置文件由程序自举
 
@@ -153,22 +172,57 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 ```
 UpDevice/
 ├── src/
-│   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口（已完成）
-│   │   ├── Program.cs             # 入口、单实例、指令分发
-│   │   ├── Logging.cs             # 文件 + 控制台日志
-│   │   ├── Config/                # config.json 模型、自举、热重载
+│   ├── UpDevice.Shared/           # 两个程序共用的配置模型与日志
+│   │   ├── Config/                # AppConfig、ConfigStore（自举 + 热重载）
+│   │   └── Logging.cs
+│   ├── UpDevice.Service/          # 主进程：采集 + 上报 + 隐藏窗口
+│   │   ├── Program.cs
 │   │   ├── Native/                # Win32 封装、隐藏窗口
 │   │   ├── Capture/               # 前台窗口、空闲、控制器、电池
 │   │   ├── Media/                 # SMTC 播放信息
 │   │   └── Reporting/             # sleepy 客户端与上报循环
-│   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置（待实现）
-│       ├── Program.cs
-│       ├── Web/                   # 最小 API 与配置页
-│       └── Ipc/                   # 与主进程通信
+│   └── UpDevice.Tray/             # 托盘 + 本地 Web 配置
+│       ├── Program.cs             # 单实例、启动 Web 服务与托盘
+│       ├── TrayContext.cs         # 托盘图标与菜单
+│       ├── TrayWebHost.cs         # 回环 Web 服务与接口
+│       ├── Ipc.cs                 # 向主进程发指令
+│       ├── Autostart.cs           # 托盘开机自启（Run 键）
+│       ├── ScheduledTask.cs       # 主进程计划任务（schtasks）
+│       ├── Web/index.html         # 配置页
+│       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
 ├── LICENSE
 └── README.md
 ```
+
+## 托盘程序
+
+以 **管理员身份运行**（`app.manifest` 里 `requireAdministrator`）—— 创建与删除计划任务需要提权，与其每次操作弹 UAC，不如整体提权。
+
+托盘菜单：
+
+| 菜单项 | 行为 |
+| --- | --- |
+| 打开 Web 配置页面 | 用默认浏览器打开本地配置页 |
+| 开机自动启动托盘（复选） | 写当前用户 `Run` 键，写入失败会把勾选状态弹回去 |
+| 退出托盘 | 只退出托盘，主进程继续运行 |
+| 退出托盘并停止上报 | 先把 `reportingEnabled` 置 false 并上报一次离线，再退出托盘 |
+
+配置页由托盘内嵌的 Kestrel 提供，默认 `http://127.0.0.1:38945/`，端口被占用时自动向后找最多 10 个。**只绑回环地址**，因为它能读到 `secret`。
+
+页面对应的接口：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/state` | 上报开关、任务计划、托盘自启、主进程是否在运行 |
+| `GET /api/config` | 读取完整配置 |
+| `POST /api/config` | 保存配置并通知主进程 `reload` |
+| `POST /api/reporting` | 开始 / 停止上报 |
+| `POST /api/task` | 启用 / 禁用计划任务 |
+| `POST /api/test` | 探测远端实例：先试 `/api/meta`，再退到 `/api/status/query` |
+
+计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Service`，指向同目录的 `UpDevice.Service.exe`。
+
 
 ## 构建与运行
 
@@ -235,8 +289,10 @@ docs: 更新使用说明
 - [x] sleepy 上报客户端（鉴权、去重、关机离线）
 - [x] `config.json` 自举与热重载
 - [x] 主进程隐藏窗口（关机消息 + 指令通道）
-- [ ] 托盘程序：常驻、菜单、本地 Web 配置页
-- [ ] 计划任务开机自启
+- [x] 托盘程序：常驻、菜单、本地 Web 配置页
+- [x] 计划任务开机自启（`/api/task` 启停）
+- [ ] 首次运行引导（检测到未配置时自动打开配置页）
+- [ ] 计划任务的真实环境验证（沙箱内 `schtasks` 被禁用，仅验证了未就绪时的报错路径）
 
 ## 相关链接
 

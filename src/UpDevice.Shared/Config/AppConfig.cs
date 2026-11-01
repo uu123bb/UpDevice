@@ -1,4 +1,4 @@
-namespace UpDevice.Service.Config;
+namespace UpDevice.Shared.Config;
 
 /// <summary>
 /// config.json 的完整结构。字段与托盘 Web 配置页一一对应。

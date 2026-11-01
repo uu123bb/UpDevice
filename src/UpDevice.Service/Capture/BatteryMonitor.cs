@@ -1,4 +1,5 @@
-using UpDevice.Service.Config;
+using UpDevice.Shared;
+using UpDevice.Shared.Config;
 
 namespace UpDevice.Service.Capture;
 

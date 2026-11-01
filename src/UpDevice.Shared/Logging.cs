@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace UpDevice.Service;
+namespace UpDevice.Shared;
 
 /// <summary>
 /// 极简日志：同时写控制台（若被终端启动）与 logs/updevice-yyyyMMdd.log。

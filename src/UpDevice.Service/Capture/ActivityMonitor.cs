@@ -12,6 +12,13 @@ public sealed class ActivityMonitor
         Volatile.Write(ref _lastControllerTick, Environment.TickCount64);
     }
 
+    /// <summary>距离最后一次控制器输入过去了多少秒；从未检测到则返回 <see cref="double.MaxValue"/>。</summary>
+    public double SecondsSinceControllerInput()
+    {
+        var lastController = Volatile.Read(ref _lastControllerTick);
+        return lastController == 0 ? double.MaxValue : (Environment.TickCount64 - lastController) / 1000.0;
+    }
+
     /// <summary>当前空闲秒数。</summary>
     public double IdleSeconds(bool includeController)
     {

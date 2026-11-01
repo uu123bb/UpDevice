@@ -25,6 +25,18 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
 
+    // ---------- 进程映像名 ----------
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder exeName, ref int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern bool CloseHandle(IntPtr handle);
+
+    internal const uint ProcessQueryLimitedInformation = 0x1000;
+
     // ---------- 控制器 ----------
     [DllImport("xinput1_4.dll")]
     internal static extern uint XInputGetState(uint userIndex, out XINPUT_STATE state);
@@ -94,5 +106,36 @@ internal static class NativeMethods
         var buffer = new StringBuilder(256);
         var length = GetClassNameW(hWnd, buffer, buffer.Capacity);
         return length > 0 ? buffer.ToString() : string.Empty;
+    }
+
+    /// <summary>
+    /// 取进程映像文件名（带扩展名，如 workbuddy.exe）。
+    /// 用 QueryFullProcessImageName 而不是 Process.MainModule：后者对提权进程会抛异常。
+    /// </summary>
+    internal static string? GetProcessImageName(uint processId)
+    {
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (handle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            var buffer = new StringBuilder(1024);
+            var size = buffer.Capacity;
+            if (!QueryFullProcessImageNameW(handle, 0, buffer, ref size))
+            {
+                return null;
+            }
+
+            var path = buffer.ToString(0, size);
+            var index = path.LastIndexOf('\\');
+            return index >= 0 ? path[(index + 1)..] : path;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
     }
 }

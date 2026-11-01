@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text;
+using UpDevice.Shared;
 
 namespace UpDevice.Service.Capture;
 
@@ -97,15 +97,19 @@ public sealed class ForegroundCapture : IDisposable
             }
         }
 
-        string name;
-        try
+        // 优先取带扩展名的映像名（workbuddy.exe），拿不到再退回 ProcessName + .exe。
+        var name = Native.NativeMethods.GetProcessImageName(pid);
+        if (string.IsNullOrEmpty(name))
         {
-            using var process = Process.GetProcessById((int)pid);
-            name = process.ProcessName;
-        }
-        catch
-        {
-            name = string.Empty;
+            try
+            {
+                using var process = Process.GetProcessById((int)pid);
+                name = process.ProcessName + ".exe";
+            }
+            catch
+            {
+                name = string.Empty;
+            }
         }
 
         if (name.Length > 0)

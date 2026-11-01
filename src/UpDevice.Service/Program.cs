@@ -1,8 +1,9 @@
 using UpDevice.Service.Capture;
-using UpDevice.Service.Config;
 using UpDevice.Service.Media;
 using UpDevice.Service.Native;
 using UpDevice.Service.Reporting;
+using UpDevice.Shared;
+using UpDevice.Shared.Config;
 
 namespace UpDevice.Service;
 

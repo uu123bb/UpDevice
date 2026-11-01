@@ -1,15 +1,35 @@
 using UpDevice.Service.Capture;
-using UpDevice.Service.Config;
 using UpDevice.Service.Media;
+using UpDevice.Shared;
+using UpDevice.Shared.Config;
 
 namespace UpDevice.Service.Reporting;
 
 /// <summary>
 /// 组装设备状态并上报。
-/// 状态优先级（待机时）：SMTC 正在播放 &gt; 便携模式电池文案 &gt; 保留最后一次前台信息。
+///
+/// 文案结构：[电池状态]核心内容
+///   核心内容 = 前台信息（活跃）/ 待机（无输入）/ SMTC 播放信息（待机且有播放）
+/// 示例：
+///   workbuddy.exe
+///   WorkBuddy（workbuddy.exe）
+///   待机
+///   泠鸢yousa - 一梦千霄（NetEase）
+///   [未在充电 98%]WorkBuddy
+///   [正在充电 50%]American Truck Simulator（正在使用控制器）
+///   [设备关闭]
 /// </summary>
 public sealed class Reporter : IDisposable
 {
+    /// <summary>无输入时的固定文案。</summary>
+    private const string IdleText = "待机";
+
+    /// <summary>控制器正在被使用时追加的标记。</summary>
+    private const string ControllerInUseText = "（正在使用控制器）";
+
+    /// <summary>控制器输入后多少秒内仍认为「正在使用控制器」。</summary>
+    private const double ControllerActiveSeconds = 10;
+
     private readonly ConfigStore _store;
     private readonly ForegroundCapture _foreground;
     private readonly ActivityMonitor _activity;
@@ -22,7 +42,7 @@ public sealed class Reporter : IDisposable
     private readonly object _gate = new();
 
     private (bool Using, string Status)? _lastSent;
-    private string? _lastActiveStatus;
+    private string? _lastForegroundText;
     private bool _warnedNoServer;
 
     public Reporter(
@@ -56,7 +76,7 @@ public sealed class Reporter : IDisposable
         lock (_gate)
         {
             _lastSent = null;
-            _lastActiveStatus = null;
+            _lastForegroundText = null;
             _warnedNoServer = false;
         }
     }
@@ -152,35 +172,55 @@ public sealed class Reporter : IDisposable
     /// <summary>按当前各项采集结果算出要上报的状态。</summary>
     public (bool Using, string Status) Compose(AppConfig config)
     {
-        var foreground = _foreground.Current;
         var idle = _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
+        var core = idle ? ComposeIdle(config) : ComposeActive(config);
 
-        if (!idle)
-        {
-            var active = FormatForeground(foreground, config.Report.StatusFormat);
-            if (active.Length > 0)
-            {
-                _lastActiveStatus = active;
-            }
-
-            return (true, active.Length > 0 ? active : _lastActiveStatus ?? string.Empty);
-        }
-
-        // 待机：优先让 SMTC 覆盖（"有 SMTC 信息盖过去"）。
-        if (config.Report.SmtcMode == SmtcModes.Idle && _smtc.Current is { } playing)
-        {
-            return (false, $"{playing.Source} - {playing.Title}");
-        }
-
-        // 便携模式：待机时用电池文案。
+        var prefix = string.Empty;
         if (config.Report.PortableMode && _battery.Format(config.Texts) is { } batteryText)
         {
-            return (false, batteryText);
+            prefix = $"[{batteryText}]";
         }
 
-        // 其余情况保留最后一次前台信息，只是标记为离线。
-        var retained = _lastActiveStatus ?? FormatForeground(foreground, config.Report.StatusFormat);
-        return (false, retained);
+        return (!idle, prefix + core);
+    }
+
+    private string ComposeIdle(AppConfig config)
+    {
+        if (config.Report.SmtcMode == SmtcModes.Idle && _smtc.Current is { } playing)
+        {
+            return FormatNowPlaying(playing);
+        }
+
+        return IdleText;
+    }
+
+    private string ComposeActive(AppConfig config)
+    {
+        var text = FormatForeground(_foreground.Current, config.Report.StatusFormat);
+
+        if (text.Length == 0)
+        {
+            // 前台窗口暂时取不到（例如切到锁屏），沿用上一次的内容而不是发空字符串。
+            text = _lastForegroundText ?? IdleText;
+        }
+        else
+        {
+            _lastForegroundText = text;
+        }
+
+        if (config.Report.ControllerEnabled && _activity.SecondsSinceControllerInput() <= ControllerActiveSeconds)
+        {
+            text += ControllerInUseText;
+        }
+
+        return text;
+    }
+
+    private static string FormatNowPlaying(NowPlaying playing)
+    {
+        return string.IsNullOrWhiteSpace(playing.Artist)
+            ? $"{playing.Title}（{playing.Source}）"
+            : $"{playing.Artist} - {playing.Title}（{playing.Source}）";
     }
 
     private static string FormatForeground(ForegroundInfo info, string format)
@@ -197,6 +237,7 @@ public sealed class Reporter : IDisposable
         };
     }
 
+    /// <summary>用全角括号拼接，与文案约定一致（窗口名（进程名））。</summary>
     private static string Join(string first, string second)
     {
         if (string.IsNullOrWhiteSpace(second))
@@ -209,19 +250,22 @@ public sealed class Reporter : IDisposable
             return second;
         }
 
-        return $"{first} ({second})";
+        return $"{first}（{second}）";
     }
 
-    /// <summary>
-    /// 收到关机信号时上报离线（只置 using=false，不调用 /api/device/remove，设备保留在页面上）。
-    /// 在窗口消息线程上同步等待，所以给 3 秒预算，超时就放弃，不能卡住注销流程。
-    /// </summary>
+    /// <summary>收到关机信号时上报离线（不调用 /api/device/remove，设备保留在页面上）。</summary>
     public void ReportShutdown()
+    {
+        ReportOffline($"[{_store.Current.Texts.Shutdown}]");
+    }
+
+    /// <summary>立即上报离线，供托盘「退出并停止上报」等场景使用。</summary>
+    public void ReportOffline(string status)
     {
         try
         {
             var config = _store.Current;
-            if (!config.ReportingEnabled || string.IsNullOrWhiteSpace(config.Remote.ServerUrl))
+            if (string.IsNullOrWhiteSpace(config.Remote.ServerUrl))
             {
                 return;
             }
@@ -231,18 +275,18 @@ public sealed class Reporter : IDisposable
                 Id = config.Remote.DeviceId,
                 ShowName = config.Remote.ShowName,
                 Using = false,
-                Status = config.Texts.Shutdown,
+                Status = status,
             };
 
-            Logging.Info($"收到关机信号，上报离线 status=\"{config.Texts.Shutdown}\"");
+            Logging.Info($"上报离线 status=\"{status}\"");
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             var ok = _client.SendAsync(config.Remote, payload, timeout.Token).GetAwaiter().GetResult();
-            Logging.Info(ok ? "关机上报完成" : "关机上报未成功");
+            Logging.Info(ok ? "离线上报完成" : "离线上报未成功");
         }
         catch (Exception ex)
         {
-            Logging.Warn($"关机上报失败: {ex.Message}");
+            Logging.Warn($"离线上报失败: {ex.Message}");
         }
     }
 

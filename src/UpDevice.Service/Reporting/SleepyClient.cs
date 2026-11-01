@@ -2,7 +2,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using UpDevice.Service.Config;
+using UpDevice.Shared;
+using UpDevice.Shared.Config;
 
 namespace UpDevice.Service.Reporting;
 

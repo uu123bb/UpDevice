@@ -1,3 +1,4 @@
+using UpDevice.Shared;
 using Windows.Media.Control;
 
 namespace UpDevice.Service.Media;
@@ -13,11 +14,11 @@ public sealed class SmtcMonitor : IDisposable
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
 
-    /// <summary>AUMID 关键字 → 展示名。QQ 音乐的 AUMID 里是 QQMusic.exe，网易云是 cloudmusic.exe。</summary>
+    /// <summary>AUMID 关键字 → 展示名。上报文案里用英文来源名，如 (NetEase)。</summary>
     private static readonly (string Keyword, string DisplayName)[] KnownSources =
     {
-        ("cloudmusic", "网易云音乐"),
-        ("qqmusic", "QQ音乐"),
+        ("cloudmusic", "NetEase"),
+        ("qqmusic", "QQ Music"),
     };
 
     private readonly CancellationTokenSource _cts = new();
