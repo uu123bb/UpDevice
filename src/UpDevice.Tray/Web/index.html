@@ -282,6 +282,10 @@
         <div class="label">设备关机时</div>
         <div class="control"><input id="textShutdown" type="text" /></div>
       </div>
+      <div class="row">
+        <div class="label">前台是桌面时<small>桌面仍算在线，只换文案</small></div>
+        <div class="control"><input id="textDesktop" type="text" /></div>
+      </div>
       <div class="row" id="rowBatteryOnBattery">
         <div class="label">电池状态 · 使用电池<small>%battery% 会替换为电量</small></div>
         <div class="control"><input id="textBatteryOnBattery" type="text" /></div>
@@ -401,6 +405,7 @@
       setChecked(el("portableMode"), cfg.report.portableMode);
 
       el("textShutdown").value = cfg.texts.shutdown || "";
+      el("textDesktop").value = cfg.texts.desktop || "";
       el("textBatteryOnBattery").value = cfg.texts.batteryOnBattery || "";
       el("textBatteryOnAc").value = cfg.texts.batteryOnAc || "";
 
@@ -454,6 +459,7 @@
         },
         texts: {
           shutdown: el("textShutdown").value,
+          desktop: el("textDesktop").value,
           batteryOnBattery: el("textBatteryOnBattery").value,
           batteryOnAc: el("textBatteryOnAc").value,
         },

@@ -61,12 +61,14 @@ public sealed class ControllerMonitor : IDisposable
         if (!config.ControllerEnabled)
         {
             _inputDetected = false;
+            _activity.NotifyControllerConnection(false);
             return;
         }
 
         var count = config.ControllerAll ? 4u : 2u;
         var deadzone = config.ControllerDeadzone;
         var detected = false;
+        var connected = false;
 
         for (uint index = 0; index < count; index++)
         {
@@ -76,6 +78,9 @@ public sealed class ControllerMonitor : IDisposable
                 continue;
             }
 
+            // 能读到状态就说明手柄插着，即使没有任何输入。
+            connected = true;
+
             if (HasInput(in state.Gamepad, deadzone))
             {
                 detected = true;
@@ -83,6 +88,8 @@ public sealed class ControllerMonitor : IDisposable
         }
 
         _inputDetected = detected;
+        _activity.NotifyControllerConnection(connected);
+
         if (detected)
         {
             _activity.NotifyControllerActivity();
