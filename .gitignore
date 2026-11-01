@@ -1,0 +1,12 @@
+# 构建产物
+bin/
+obj/
+publish/
+
+# 用户配置（含 secret，不入库）
+config.json
+
+# IDE
+.vs/
+*.user
+*.suo

@@ -12,17 +12,33 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 | 项目 | 角色 | 职责 |
 | --- | --- | --- |
-| `UpDevice.Service` | 主程序 / 后台服务 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
-| `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制采集启停、展示上报状态 |
+| `UpDevice.Service` | 主进程 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
+| `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制主进程启停、展示上报状态 |
 
-两个进程分离的原因：采集与上报需要长期驻留且不依赖用户会话，配置与状态查看需要交互入口。托盘程序不承担采集逻辑，只做控制面。
+两个进程分离的原因：采集与上报需要长期驻留，配置与状态查看需要交互入口。托盘程序不承担采集逻辑，只做控制面。
 
-### 配置为什么走本地 Web 服务
+### 主进程（UpDevice.Service）
+
+名字叫 Service，但**它不是 Windows 服务（SCM）**，而是一个普通的桌面进程，只是没有可见界面：
+
+- 在用户交互式会话内运行 —— 前台窗口、空闲状态这些信息只有在交互式会话里才拿得到，会话 0 的服务进程取到的永远是空。
+- 持有一个**隐藏窗口**用于接收系统消息，例如关机/注销前的 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，以便在退出前把状态收尾（如调用 `/api/device/remove` 下线本设备）。
+- 同时承担与托盘的 IPC：托盘通过窗口消息或命名管道通知它重载配置、暂停采集。
+
+> 注意：隐藏窗口必须是**普通顶层窗口**（`ShowInTaskbar = false`），不能用消息专用窗口（`HWND_MESSAGE`）。消息专用窗口收不到 `WM_QUERYENDSESSION` 这类广播消息，用它就永远等不到关机通知。
+
+启动方式：主进程不自己注册为服务，而是由**计划任务（用户登录时触发）**或一个只做拉起的 SCM 服务来启动。后者如果采用，服务本身只能当 launcher —— 需要在用户会话内 `CreateProcessAsUser` 拉起主进程，因为服务进程运行在会话 0。
+
+### 托盘程序（UpDevice.Tray）
+
+WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页、退出），界面主体是下面这个本地 Web 服务。
+
+#### 配置为什么走本地 Web 服务
 
 托盘程序不写桌面表单，而是内嵌一个仅监听回环地址的 Web 服务，配置界面用浏览器打开。好处是不用为一个小配置页引入完整的桌面 UI 技术栈，表单校验与「测试连接」这类交互在网页里更容易实现，后续改配置项也不用重新设计布局。
 
 ```
-浏览器 ──→ http://127.0.0.1:<port> ──→ UpDevice.Tray（Web 服务） ──→ 读写配置文件
+浏览器 ──→ http://127.0.0.1:<port> ──→ UpDevice.Tray（Web 服务） ──→ 读写 config.json
 ```
 
 该服务只绑定 `127.0.0.1`，不对局域网暴露；配置中的 `secret` 属于敏感信息，接口与页面均不做外网访问。
@@ -30,12 +46,12 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 ## 工作方式
 
 ```
-   前台窗口 / 空闲状态 / 设备配置
+   前台窗口 / 空闲状态 / config.json
                  │
                  ▼
         UpDevice.Service ────── POST /api/device/set ──────▶ sleepy
                  ▲
-                 │ 读取配置
+                 │ 读取 config.json
                  │
         UpDevice.Tray  ◀────── 浏览器访问 127.0.0.1:port 修改配置
 ```
@@ -58,42 +74,59 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 - **鉴权**：需与服务端 `SLEEPY_SECRET` 一致。支持 `Sleepy-Secret` 请求头、`Authorization: Bearer <secret>`、请求体 `secret` 字段等方式，本客户端使用请求头。
 
+设备下线可用 `GET /api/device/remove?id=<device_id>`（需鉴权），在收到关机消息或用户退出时调用。
+
 ## 技术栈
 
-- 语言 / 运行时：C# / .NET
-- 托盘常驻：托盘图标宿主（`NotifyIcon`，宿主框架 WinForms / WPF 待定）
+- 语言 / 运行时：C# / .NET 10（`net10.0-windows`）
+- 托盘程序：WinForms（`UseWindowsForms`）
+- 主进程隐藏窗口：WinForms `NativeWindow` 承载消息循环
 - 配置界面：内嵌 ASP.NET Core Web 服务（Kestrel + 最小 API），仅绑定 `127.0.0.1`
-- 服务宿主：Windows 服务，或用户会话内自启进程（待定）
 - 设备信息采集：Win32 前台窗口 API（`GetForegroundWindow` / `GetWindowThreadProcessId`）与系统空闲时间（`GetLastInputInfo`）
+- 启动方式：计划任务（登录触发）拉起主进程
+
+> 本项目的 SDK 版本与 ClassIsland-Misha 插件保持一致，便于共用同一套 .NET 10 工具链。
 
 ## 配置
 
-配置由托盘程序维护，Service 读取。字段规划（名称待定）：
+配置读写由托盘程序负责，主进程读取。文件位于**两个程序所在的同一目录**下，名为 `config.json`：
 
-| 字段 | 说明 |
-| --- | --- |
-| `server_url` | sleepy 服务端地址，如 `https://sleepy.example.com` |
-| `secret` | 与服务端 `SLEEPY_SECRET` 一致的鉴权密钥 |
-| `device_id` | 设备标识符，对应 API 的 `id` |
-| `show_name` | 页面显示的设备名称 |
-| `interval` | 上报间隔 |
+```jsonc
+{
+  "server_url": "https://sleepy.example.com", // sleepy 服务端地址
+  "secret": "",                               // 与服务端 SLEEPY_SECRET 一致
+  "device_id": "device-1",                    // 对应 API 的 id
+  "show_name": "MyDevice",                    // 页面显示的设备名称
+  "interval": 30                              // 上报间隔（秒）
+}
+```
 
-配置文件为 JSON，具体路径与读写方式待定（需保证 Service 与 Tray 两个进程都能访问）。
+字段名称以实际实现为准。`config.json` 中含 `secret`，**不纳入版本控制**，需加入 `.gitignore`。
+
+为了让两个程序落到同一目录，构建输出需要统一（`Directory.Build.props` 统一 `OutputPath`，或发布到同一个 `publish/` 目录），而不是各项目默认的 `bin/Debug/net10.0-windows/`。
 
 ## 仓库结构（规划）
 
 ```
 UpDevice/
 ├── src/
-│   ├── UpDevice.Service/    # 采集与上报主程序
-│   └── UpDevice.Tray/       # 托盘程序
+│   ├── UpDevice.Service/       # 主进程：采集 + 上报 + 隐藏窗口
+│   │   ├── Program.cs
+│   │   ├── Native/             # 隐藏窗口、系统消息、Win32 封装
+│   │   ├── Capture/            # 前台窗口与空闲状态采集
+│   │   └── Reporting/          # sleepy API 客户端
+│   └── UpDevice.Tray/          # 托盘 + 本地 Web 配置
+│       ├── Program.cs
+│       ├── Web/                # 最小 API 与配置页
+│       └── Ipc/                # 与主进程通信
 ├── UpDevice.sln
+├── Directory.Build.props       # 统一输出目录等
 └── README.md
 ```
 
 ## 构建
 
-需要 .NET SDK（版本待定）：
+需要 .NET 10 SDK：
 
 ```bash
 dotnet build UpDevice.sln
@@ -116,14 +149,15 @@ docs: 更新使用说明
 
 ## 路线图
 
-- [ ] 建立解决方案骨架（`UpDevice.sln` + 两个项目）
+- [ ] 建立解决方案骨架（`UpDevice.sln` + 两个项目 + 统一输出目录）
 - [ ] 前台窗口与应用名采集
 - [ ] 空闲状态判定（是否正在使用）
 - [ ] sleepy 上报客户端（含鉴权与重试）
-- [ ] 配置文件读写与共享（Service / Tray 共用）
+- [ ] `config.json` 读写与热重载
+- [ ] 主进程隐藏窗口：接收关机消息与 IPC
 - [ ] 托盘常驻与菜单（启停、打开配置页、退出）
 - [ ] 本地 Web 配置服务（仅回环）+ 配置页与「测试连接」
-- [ ] 开机自启 / 服务安装
+- [ ] 计划任务开机自启
 
 ## 相关链接
 
