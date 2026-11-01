@@ -46,6 +46,7 @@ public sealed class Reporter : IDisposable
     private string? _lastForegroundText;
     private bool _warnedNoServer;
     private bool _warnedSmtcInvalid;
+    private bool _smtcDeviceDeleted;
 
     public Reporter(
         ConfigStore store,
@@ -141,10 +142,9 @@ public sealed class Reporter : IDisposable
         await SendAsync(config, config.Remote.DeviceId, config.Remote.ShowName, usingFlag, status, isMain: true, token)
             .ConfigureAwait(false);
 
-        if (config.Report.SmtcMode == SmtcModes.Separate && ComposeSmtc(config) is { } smtc)
+        if (config.Report.SmtcMode == SmtcModes.Separate)
         {
-            await SendAsync(config, config.Smtc.DeviceId, config.Smtc.ShowName, smtc.Using, smtc.Status, isMain: false, token)
-                .ConfigureAwait(false);
+            await SyncSmtcDeviceAsync(config, token).ConfigureAwait(false);
         }
     }
 
@@ -229,7 +229,7 @@ public sealed class Reporter : IDisposable
     /// <summary>按当前各项采集结果算出要上报的状态。</summary>
     public (bool Using, string Status) Compose(AppConfig config)
     {
-        var idle = _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
+        var idle = IsDeviceIdle(config);
         var core = idle ? ComposeIdle(config) : ComposeActive(config);
 
         var prefix = string.Empty;
@@ -253,38 +253,69 @@ public sealed class Reporter : IDisposable
     }
 
     /// <summary>
-    /// 计算 SMTC 设备的文案。返回 null 表示这次不报（配置不完整或 ID 冲突）。
+    /// 同步 SMTC 设备。
     ///
     /// 规则：
-    ///   无受支持会话      → 离线，文案「待机」
-    ///   暂停播放          → 离线，但保留歌曲信息
-    ///   本机判定为待机    → 离线，不管是否在播（信息保留）
-    ///   正在播放且本机活跃 → 在线
+    ///   没有可用的 SMTC 会话 → **删除该设备**（不挂一个待机的僵尸设备）
+    ///   暂停播放             → 保留歌曲信息，但置为离线
+    ///   本机待机             → 置为离线（不管是否在播），信息保留
+    ///   正在播放且本机活跃   → 在线
     /// </summary>
-    private (bool Using, string Status)? ComposeSmtc(AppConfig config)
+    private async Task SyncSmtcDeviceAsync(AppConfig config, CancellationToken token)
     {
         var smtc = config.Smtc;
 
         if (string.IsNullOrWhiteSpace(smtc.DeviceId) || string.IsNullOrWhiteSpace(smtc.ShowName))
         {
             WarnSmtcOnce("SMTC 单独上报已开启，但 SMTC 设备 ID 或设备名为空，本次跳过");
-            return null;
+            return;
         }
 
         if (string.Equals(smtc.DeviceId, config.Remote.DeviceId, StringComparison.OrdinalIgnoreCase))
         {
             WarnSmtcOnce("SMTC 设备 ID 不能与本机设备 ID 相同，本次跳过");
-            return null;
+            return;
         }
 
         var nowPlaying = _smtc.Current;
+
         if (nowPlaying is null)
         {
-            return (false, IdleText);
+            // 只删一次，避免每轮都打一次 remove。
+            if (_smtcDeviceDeleted)
+            {
+                return;
+            }
+
+            var removed = await _client.RemoveDeviceAsync(config.Remote, smtc.DeviceId, token).ConfigureAwait(false);
+            if (removed)
+            {
+                _smtcDeviceDeleted = true;
+                lock (_gate)
+                {
+                    _lastSmtcSent = null;
+                }
+
+                Logging.Info($"没有可用的 SMTC 会话，已删除设备 {smtc.DeviceId}");
+            }
+
+            return;
         }
 
-        var idle = _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
-        return (nowPlaying.IsPlaying && !idle, FormatNowPlaying(nowPlaying));
+        // 会话重新出现，恢复上报。
+        _smtcDeviceDeleted = false;
+
+        var idle = IsDeviceIdle(config);
+        var usingFlag = nowPlaying.IsPlaying && !idle;
+        await SendAsync(config, smtc.DeviceId, smtc.ShowName, usingFlag, FormatNowPlaying(nowPlaying), isMain: false, token)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>本机是否处于待机：无有效前台窗口，或超过超时时间没有输入。</summary>
+    private bool IsDeviceIdle(AppConfig config)
+    {
+        return _foreground.Current.IsEmpty
+            || _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
     }
 
     private void WarnSmtcOnce(string message)
