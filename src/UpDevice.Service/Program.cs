@@ -55,9 +55,12 @@ internal static class Program
 
         using var window = new HiddenMessageWindow();
         window.SessionEnding += reporter.ReportShutdown;
-        window.CommandReceived += command => HandleCommand(command, store, reporter);
+        window.CommandReceived += command => HandleCommand(command, store, reporter, window);
 
         Logging.Info(dryRun ? "已进入运行状态（DRY-RUN，不真正发送请求）" : "已进入运行状态");
+
+        // 主进程被单独拉起时，把托盘也带起来（托盘已在运行则跳过）。
+        SiblingProcess.EnsureRunning("UpDevice.Tray.exe", @"Local\UpDevice.Tray");
 
         Application.Run(new ApplicationContext());
 
@@ -96,7 +99,7 @@ internal static class Program
         return 0;
     }
 
-    private static void HandleCommand(string command, ConfigStore store, Reporter reporter)
+    private static void HandleCommand(string command, ConfigStore store, Reporter reporter, HiddenMessageWindow window)
     {
         switch (command.Trim().ToLowerInvariant())
         {
@@ -108,6 +111,27 @@ internal static class Program
             case "shutdown-report":
                 Logging.Info("收到 shutdown-report 指令");
                 reporter.ReportShutdown();
+                break;
+
+            case "stop-and-exit":
+                // 托盘「退出并停止上报」：先上报停止文案，再把自己结束掉。
+                // 放到后台线程做，避免阻塞窗口消息线程（托盘那边 SendMessage 会同步等待）。
+                Logging.Info("收到 stop-and-exit 指令");
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        reporter.ReportOffline("[设备已停止上报]");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logging.Warn($"停止上报文案发送失败: {ex.Message}");
+                    }
+                    finally
+                    {
+                        window.RequestExit();
+                    }
+                });
                 break;
 
             case "exit":

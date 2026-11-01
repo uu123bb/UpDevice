@@ -191,6 +191,9 @@ UpDevice/
 │       ├── Web/index.html         # 配置页
 │       └── app.manifest           # requireAdministrator
 ├── UpDevice.sln
+├── .github/
+│   ├── workflows/build.yml        # 构建、打包 ZIP、发版
+│   └── release.yml                # Release 说明的分类规则
 ├── LICENSE
 └── README.md
 ```
@@ -206,7 +209,12 @@ UpDevice/
 | 打开 Web 配置页面 | 用默认浏览器打开本地配置页 |
 | 开机自动启动托盘（复选） | 写当前用户 `Run` 键，写入失败会把勾选状态弹回去 |
 | 退出托盘 | 只退出托盘，主进程继续运行 |
-| 退出托盘并停止上报 | 先把 `reportingEnabled` 置 false 并上报一次离线，再退出托盘 |
+| 退出托盘并停止上报 | 让主进程先上报 `[设备已停止上报]`，再连同主进程一起结束 |
+
+两个程序**互相拉起**：主进程启动时发现托盘没在跑就拉起托盘，托盘启动时同样拉主进程。判断依据是各自的命名 Mutex，已经在运行就直接跳过，所以不会互相拉成死循环。只在启动时做一次，不做持续守护 —— 否则「退出托盘」会被立刻拽回来。
+
+托盘整体提权意味着主进程若以普通权限启动、拉托盘时可能拿到 `ERROR_ELEVATION_REQUIRED`，这种情况只记录日志不弹窗；反过来托盘（已提权）拉主进程没有这个问题。
+
 
 配置页由托盘内嵌的 Kestrel 提供，默认 `http://127.0.0.1:38945/`，端口被占用时自动向后找最多 10 个。**只绑回环地址**，因为它能读到 `secret`。
 
@@ -252,7 +260,8 @@ dotnet run --project src/UpDevice.Service -- --dry-run
 | --- | --- |
 | `reload` | 重新读取 config.json |
 | `shutdown-report` | 立即上报离线（等同收到关机信号） |
-| `exit` | 退出主进程 |
+| `stop-and-exit` | 上报 `[设备已停止上报]` 后退出主进程 |
+| `exit` | 直接退出主进程 |
 
 ## 发布
 
@@ -262,6 +271,26 @@ dotnet run --project src/UpDevice.Service -- --dry-run
 dotnet publish src/UpDevice.Service -c Release -o publish
 dotnet publish src/UpDevice.Tray    -c Release -o publish
 ```
+
+## 持续集成
+
+`.github/workflows/build.yml`：
+
+| 触发 | 行为 |
+| --- | --- |
+| Push 到 `main` | 编译 + 发布 + 上传 ZIP 产物（保留 14 天） |
+| Pull Request 到 `main` | 同上，用于验证 PR |
+| Push `v*` 标签 | 在构建基础上创建 Release，附上 ZIP，ChangeLog 自动生成 |
+| 手动触发 | 可填版本号（如 `v1.0.0`）直接发版；留空只构建 |
+
+打包细节：
+
+- 以 `win-x64`、**self-contained** 方式发布，用户不需要预装 .NET 10 运行时。
+- 两个程序发布到同一个 `publish/` 目录，一起压进 `UpDevice-<版本>-win-x64.zip`。
+- 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
+- 当前体积约 65 MB（压缩后）。
+
+ChangeLog 用 GitHub 原生的 release notes 生成，分类规则写在 `.github/release.yml`（新功能 / 问题修复 / 文档与构建 / 其他）。
 
 ## 分支约定
 
@@ -291,6 +320,9 @@ docs: 更新使用说明
 - [x] 主进程隐藏窗口（关机消息 + 指令通道）
 - [x] 托盘程序：常驻、菜单、本地 Web 配置页
 - [x] 计划任务开机自启（`/api/task` 启停）
+- [x] 两程序互相拉起
+- [x] 退出托盘并停止上报（上报 `[设备已停止上报]` 后一起结束）
+- [x] GitHub Actions：构建、打包 ZIP、Release 与 ChangeLog
 - [ ] 首次运行引导（检测到未配置时自动打开配置页）
 - [ ] 计划任务的真实环境验证（沙箱内 `schtasks` 被禁用，仅验证了未就绪时的报错路径）
 

@@ -10,3 +10,6 @@ config.json
 .vs/
 *.user
 *.suo
+
+# 协作笔记（不入公开仓库）
+.workbuddy/

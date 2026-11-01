@@ -7,13 +7,11 @@ namespace UpDevice.Tray;
 /// <summary>托盘图标与菜单。</summary>
 internal sealed class TrayContext : ApplicationContext
 {
-    private readonly ConfigStore _store;
     private readonly TrayWebHost _web;
     private readonly NotifyIcon _icon;
 
-    public TrayContext(ConfigStore store, TrayWebHost web)
+    public TrayContext(TrayWebHost web)
     {
-        _store = store;
         _web = web;
 
         var menu = new ContextMenuStrip();
@@ -63,17 +61,18 @@ internal sealed class TrayContext : ApplicationContext
         }
     }
 
-    /// <summary>停掉上报再退出托盘；主进程留在后台等待下次启动（不强制结束它）。</summary>
+    /// <summary>
+    /// 「退出托盘并停止上报」：让主进程先发一条停止上报文案，再连同主进程一起结束。
+    /// 顺序不能反 —— 先杀进程就没机会把状态推给服务端了。
+    /// </summary>
     private void ExitAndStopReporting()
     {
         try
         {
-            var config = _store.Current;
-            config.ReportingEnabled = false;
-            _store.Save(config);
-
-            Ipc.SendCommand("shutdown-report");
-            Ipc.SendCommand("reload");
+            if (Ipc.SendCommand("stop-and-exit"))
+            {
+                WaitForServiceExit(TimeSpan.FromSeconds(6));
+            }
         }
         catch (Exception ex)
         {
@@ -81,6 +80,34 @@ internal sealed class TrayContext : ApplicationContext
         }
 
         ExitThread();
+    }
+
+    private static void WaitForServiceExit(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!Ipc.IsServiceRunning)
+            {
+                return;
+            }
+
+            Thread.Sleep(150);
+        }
+
+        // 兜底：指令没让它退出就强杀，避免留一个失联进程。
+        Logging.Warn("主进程未在超时内退出，强制结束");
+        foreach (var process in Process.GetProcessesByName("UpDevice.Service"))
+        {
+            try
+            {
+                process.Kill();
+            }
+            catch (Exception ex)
+            {
+                Logging.Warn($"结束主进程失败: {ex.Message}");
+            }
+        }
     }
 
     protected override void ExitThreadCore()

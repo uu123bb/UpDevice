@@ -35,7 +35,10 @@ internal static class Program
             return;
         }
 
-        using var context = new TrayContext(store, web);
+        // 托盘先起来时把主进程也带起来（主进程已在运行则跳过）。
+        SiblingProcess.EnsureRunning("UpDevice.Service.exe", @"Local\UpDevice.Service");
+
+        using var context = new TrayContext(web);
         Application.Run(context);
 
         web.DisposeAsync().AsTask().GetAwaiter().GetResult();

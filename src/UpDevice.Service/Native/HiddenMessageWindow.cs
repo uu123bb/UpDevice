@@ -15,6 +15,9 @@ internal sealed class HiddenMessageWindow : NativeWindow, IDisposable
     private const int WM_ENDSESSION = 0x0016;
     private const int WM_COPYDATA = 0x004A;
 
+    /// <summary>自定义消息：请求退出消息循环（跨线程投递，必须回到 UI 线程执行）。</summary>
+    private const int WM_REQUEST_EXIT = 0x8000 + 1;
+
     /// <summary>系统即将关机/注销。</summary>
     public event Action? SessionEnding;
 
@@ -64,9 +67,24 @@ internal sealed class HiddenMessageWindow : NativeWindow, IDisposable
 
                 m.Result = new IntPtr(1);
                 return;
+
+            case WM_REQUEST_EXIT:
+                // 后台线程报告完状态后，把「退出」投递回 UI 线程执行。
+                Application.ExitThread();
+                m.Result = IntPtr.Zero;
+                return;
         }
 
         base.WndProc(ref m);
+    }
+
+    /// <summary>从任意线程请求退出消息循环。</summary>
+    public void RequestExit()
+    {
+        if (Handle != IntPtr.Zero)
+        {
+            NativeMethods.PostMessage(Handle, WM_REQUEST_EXIT, IntPtr.Zero, IntPtr.Zero);
+        }
     }
 
     private static string? ReadCopyDataString(IntPtr lParam)
