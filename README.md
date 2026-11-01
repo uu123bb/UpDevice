@@ -216,21 +216,25 @@ workbuddy.exe（WorkBuddy）
 - SMTC 只认网易云音乐（`NetEase`）与 QQ 音乐（`QQ Music`），格式为 `歌手 - 歌曲（来源）`，无歌手时只显示歌曲。
 - 关机与离线通过上报接口置 `using=false`，不调用 device/remove，设备仍留在页面上。
 
-### 前台窗口的屏蔽规则
+### 前台窗口的判定
 
-Windows 有一批临时浮层会抢走前台窗口：开始菜单、Alt+Tab、通知中心、输入法候选框、任务栏缩略图……它们不是用户真正在用的应用，直接上报会变成一串莫名其妙的窗口名。
+Windows 的前台窗口不一定代表「用户在用什么」，判定分三档，别混在一起：
 
-命中屏蔽规则的窗口**不更新**当前前台信息，保留上一次有效结果。规则分三个维度（清单参照 sleepy 官方客户端 `client/win_device.py` 的 `SKIPPED_NAMES`，另补了进程名与类名）：
+| 判定 | 典型窗口 | 结果 |
+| --- | --- | --- |
+| **待机** | 桌面（`Progman` / `WorkerW`）、锁屏（`LockApp.exe`、会话已锁定） | 按待机处理：`using=false`，文案 `待机` |
+| **忽略** | 开始菜单、Alt+Tab / 任务视图、通知中心、搜索、输入法候选框、任务栏 | 不更新，**保留上一次的应用名** |
+| **正常** | 其余窗口 | 按上报形式拼接后上报 |
 
-| 维度 | 例子 |
-| --- | --- |
-| 窗口标题 | 空标题、`任务切换`、`快速设置`、`通知中心`、`操作中心`、`搜索`、`任务视图`、`系统托盘溢出窗口。`、`Snipper - Snipaste` |
-| 进程名 | `ShellExperienceHost.exe`、`StartMenuExperienceHost.exe`、`SearchHost.exe`、`TextInputHost.exe`、`LockApp.exe`、`Widgets.exe` |
-| 窗口类名 | `Progman` / `WorkerW`（桌面）、`Shell_TrayWnd`（任务栏）、`NotifyIconOverflowWindow`（托盘溢出）、`XamlExplorerHostIslandWindow`（Win11 任务视图）、`IME`（输入法） |
+区分这两类很关键：桌面和锁屏说明用户真的没在用电脑，必须报待机；而 Alt+Tab、输入法这类只是短暂挡了一下，如果也报待机，状态会疯狂抖动。
+
+锁屏除进程名外还看**会话状态**：`OpenInputDesktop` 打不开就说明切到了锁屏桌面，即使前台窗口抓不到也能判出来。
+
+规则实现在 `Capture/ForegroundFilter.cs`，标题清单参照 sleepy 官方客户端 `client/win_device.py` 的 `SKIPPED_NAMES`，另补了进程名与窗口类名两个维度。
 
 没有把 `Windows.UI.Core.CoreWindow` 列入 —— UWP 应用本体也用这个类名，加进去会误杀正常应用。
 
-同样的规则也影响「没有前台窗口」的判断：如果一直抓不到有效窗口（例如刚登录、只剩桌面），按待机处理。
+如果一直抓不到有效前台窗口（例如刚登录），也按待机处理。
 
 ### SMTC 单独上报成一个设备
 

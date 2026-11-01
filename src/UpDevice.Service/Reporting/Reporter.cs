@@ -311,10 +311,11 @@ public sealed class Reporter : IDisposable
             .ConfigureAwait(false);
     }
 
-    /// <summary>本机是否处于待机：无有效前台窗口，或超过超时时间没有输入。</summary>
+    /// <summary>本机是否处于待机：桌面/锁屏、无有效前台窗口，或超过超时时间没有输入。</summary>
     private bool IsDeviceIdle(AppConfig config)
     {
-        return _foreground.Current.IsEmpty
+        return _foreground.IsIdleSurface
+            || _foreground.Current.IsEmpty
             || _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
     }
 

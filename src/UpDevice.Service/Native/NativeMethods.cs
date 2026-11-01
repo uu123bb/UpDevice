@@ -28,6 +28,31 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
 
+    // ---------- 会话锁屏检测 ----------
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
+    private const uint DesktopSwitchDesktop = 0x0100;
+
+    /// <summary>
+    /// 当前会话是否被锁定（锁屏 / 安全桌面）。
+    /// 判定方式：打不开输入桌面就说明已经切到锁屏桌面了。
+    /// </summary>
+    internal static bool IsSessionLocked()
+    {
+        var desktop = OpenInputDesktop(0, false, DesktopSwitchDesktop);
+        if (desktop == IntPtr.Zero)
+        {
+            return true;
+        }
+
+        CloseDesktop(desktop);
+        return false;
+    }
+
     // ---------- 进程映像名 ----------
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
