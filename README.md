@@ -179,16 +179,32 @@ workbuddy.exe（WorkBuddy）
 - SMTC 只认网易云音乐（`NetEase`）与 QQ 音乐（`QQ Music`），格式为 `歌手 - 歌曲（来源）`，无歌手时只显示歌曲。
 - 关机与离线通过上报接口置 `using=false`，不调用 device/remove，设备仍留在页面上。
 
+### 前台窗口的屏蔽规则
+
+Windows 有一批临时浮层会抢走前台窗口：开始菜单、Alt+Tab、通知中心、输入法候选框、任务栏缩略图……它们不是用户真正在用的应用，直接上报会变成一串莫名其妙的窗口名。
+
+命中屏蔽规则的窗口**不更新**当前前台信息，保留上一次有效结果。规则分三个维度（清单参照 sleepy 官方客户端 `client/win_device.py` 的 `SKIPPED_NAMES`，另补了进程名与类名）：
+
+| 维度 | 例子 |
+| --- | --- |
+| 窗口标题 | 空标题、`任务切换`、`快速设置`、`通知中心`、`操作中心`、`搜索`、`任务视图`、`系统托盘溢出窗口。`、`Snipper - Snipaste` |
+| 进程名 | `ShellExperienceHost.exe`、`StartMenuExperienceHost.exe`、`SearchHost.exe`、`TextInputHost.exe`、`LockApp.exe`、`Widgets.exe` |
+| 窗口类名 | `Progman` / `WorkerW`（桌面）、`Shell_TrayWnd`（任务栏）、`NotifyIconOverflowWindow`（托盘溢出）、`XamlExplorerHostIslandWindow`（Win11 任务视图）、`IME`（输入法） |
+
+没有把 `Windows.UI.Core.CoreWindow` 列入 —— UWP 应用本体也用这个类名，加进去会误杀正常应用。
+
+同样的规则也影响「没有前台窗口」的判断：如果一直抓不到有效窗口（例如刚登录、只剩桌面），按待机处理。
+
 ### SMTC 单独上报成一个设备
 
 `smtcMode = separate` 时，播放信息不再写进本设备，而是作为**第二个设备**独立上报，需要额外填 `smtc.deviceId` 与 `smtc.showName`。
 
-| SMTC 状态 | 该设备 `using` | 文案 |
+| SMTC 状态 | 该设备 | 说明 |
 | --- | --- | --- |
-| 正在播放，且本机不在待机 | `true` | `歌手 - 歌曲（NetEase）` |
-| 暂停播放 | `false` | 保留歌曲信息，不移除 |
-| 没有受支持的会话 | `false` | `待机` |
-| 本机判定为待机 | `false` | 保留最后一次的播放信息，不管是否在播 |
+| 正在播放，且本机不在待机 | 在线 | `歌手 - 歌曲（NetEase）` |
+| 暂停播放 | 离线 | 保留歌曲信息，不移除 |
+| 本机判定为待机 | 离线 | 保留播放信息，不管是否在播 |
+| 没有受支持的会话 | **删除设备** | 不挂一个「待机」的僵尸设备，会话重新出现时自动重建 |
 
 - 两个设备各自去重、各自上报，互不干扰。
 - `smtc.deviceId` 不能与本机 `deviceId` 相同，否则跳过

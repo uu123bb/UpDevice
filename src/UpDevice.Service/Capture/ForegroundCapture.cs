@@ -78,8 +78,9 @@ public sealed class ForegroundCapture : IDisposable
 
         var info = new ForegroundInfo(process, title, className, DateTime.Now);
 
-        // 桌面、锁屏之类没有标题的窗口不覆盖已有信息，避免状态在息屏时抖成空。
-        if (info.IsEmpty)
+        // 桌面、开始菜单、Alt+Tab、输入法候选框这类浮层直接丢弃，
+        // 保留上一次有效的前台信息（详见 ForegroundFilter）。
+        if (ForegroundFilter.ShouldIgnore(info))
         {
             return;
         }
