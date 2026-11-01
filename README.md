@@ -416,8 +416,8 @@ UpDevice/
 | --- | --- |
 | Push 到 `main` | 编译 + 发布 + 上传 ZIP 产物（保留 14 天） |
 | Pull Request 到 `main` | 同上，用于验证 PR |
-| Push `v*` 标签 | 在构建基础上创建 Release，附上 ZIP，ChangeLog 自动生成 |
-| 手动触发 | 可填版本号（如 `v1.0.0`）直接发版；留空只构建 |
+| Push 版本标签 | 在构建基础上创建 Release，附上 ZIP，ChangeLog 自动生成 |
+| 手动触发 | 可填版本号（如 `1.1.0.0`）直接发版；留空只构建 |
 
 打包细节：
 
@@ -425,7 +425,8 @@ UpDevice/
 - 压缩包内是版本化布局：根目录只有单文件 `UpDevice.Launcher.exe`，程序在 `app-<版本>-0/` 子目录里。
 - 打包时会校验根目录：出现 `.dll` / `.json` / `.pdb` 或者多余 exe 直接让构建失败。
 - 运行时不会生成 `data/`，由程序首次启动时创建。
-- **版本号由 tag 注入**：`v1.0.1.1` → `-p:Version=1.0.1.1`；非 tag 构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
+- **版本号由标签注入**：标签形如 `1.1.0.0`（**不带 `v` 前缀**）→ `-p:Version=1.1.0.0`；非标签构建标记为 `0.0.0-dev`。本地构建用 `Directory.Build.props` 里的值。
+- 版本格式为 `Major.Second.Patcher1.Patcher2` 四段，从 `1.1.0.0` 起算；标签不符合这个格式时只构建、不发版（历史带 `v` 的标签仍兼容）。
 - 不生成 pdb（`-p:DebugType=none`），包内附 `README.md` 与 `LICENSE`。
 - 代价说明：启动器与程序各自 self-contained，运行时会重复一份，包体因此偏大（约 120 MB）。若要缩小更新包，可改为框架依赖 + 要求预装 .NET 10 桌面运行时。
 

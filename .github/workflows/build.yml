@@ -3,13 +3,15 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # 标签统一不带 v，形如 1.1.0.0；这里放开所有标签，
+    # 是否发版由「计算版本号」那步按格式判断。
+    tags: ["*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布为 Release 的版本号（如 v1.0.0），留空则只构建产物"
+        description: "要发布为 Release 的版本号（形如 1.1.0.0），留空则只构建产物"
         required: false
         default: ""
 
@@ -26,6 +28,9 @@ jobs:
   build:
     name: 构建并打包
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.ver.outputs.release }}
 
     steps:
       - name: 检出代码
@@ -40,14 +45,33 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          # tag 形如 v1.0.1.1，去掉前缀就是四段版本号；非 tag 构建标记为开发版
+          # 版本格式：Major.Second.Patcher1.Patcher2，例如 1.1.0.0
+          # 标签不带 v（历史标签带 v 的仍然兼容）
+          $candidate = ""
           if ("${{ github.ref_type }}" -eq "tag") {
-            $version = "${{ github.ref_name }}".TrimStart("v")
-          } else {
-            $version = "0.0.0-dev"
+            $candidate = "${{ github.ref_name }}"
           }
-          Write-Host "版本号: $version"
+          elseif ("${{ inputs.tag }}" -ne "") {
+            $candidate = "${{ inputs.tag }}"
+          }
+
+          $candidate = $candidate -replace '^[vV]', ''
+          $version = "0.0.0-dev"
+          $release = "false"
+
+          if ($candidate -ne "") {
+            if ($candidate -match '^\d+\.\d+\.\d+\.\d+$') {
+              $version = $candidate
+              $release = "true"
+            }
+            else {
+              Write-Host "「$candidate」不是 Major.Second.Patcher1.Patcher2 格式，本次只构建不发版"
+            }
+          }
+
+          Write-Host "版本号: $version (发版: $release)"
           "version=$version" >> $env:GITHUB_OUTPUT
+          "release=$release" >> $env:GITHUB_OUTPUT
 
       - name: 还原依赖
         run: dotnet restore UpDevice.sln
@@ -114,11 +138,8 @@ jobs:
         shell: pwsh
         run: |
           $name = "UpDevice-win-x64.zip"
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $name = "UpDevice-${{ github.ref_name }}-win-x64.zip"
-          }
-          elseif ("${{ inputs.tag }}" -ne "") {
-            $name = "UpDevice-${{ inputs.tag }}-win-x64.zip"
+          if ("${{ steps.ver.outputs.release }}" -eq "true") {
+            $name = "UpDevice-${{ steps.ver.outputs.version }}-win-x64.zip"
           }
 
           Compress-Archive -Path publish/* -DestinationPath $name -Force
@@ -138,10 +159,8 @@ jobs:
   release:
     name: 发布 Release
     needs: build
-    # 推 tag（v*）或手动指定版本号时才发版
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    # 由「计算版本号」判定：只有形如 1.1.0.0 的标签或手动输入才发版
+    if: needs.build.outputs.release == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -153,13 +172,12 @@ jobs:
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          # tag 触发时用已有 tag；手动触发时按输入创建
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          name: ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.build.outputs.version }}
+          name: ${{ needs.build.outputs.version }}
           files: artifact/**/*.zip
           # ChangeLog 由 GitHub 依据 .github/release.yml 的分类规则自动生成
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
