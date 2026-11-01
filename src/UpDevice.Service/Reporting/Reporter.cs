@@ -143,6 +143,7 @@ public sealed class Reporter : IDisposable
             Id = config.Remote.DeviceId,
             ShowName = config.Remote.ShowName,
             Using = usingFlag,
+            AppName = status,
             Status = status,
         };
 
@@ -275,6 +276,7 @@ public sealed class Reporter : IDisposable
                 Id = config.Remote.DeviceId,
                 ShowName = config.Remote.ShowName,
                 Using = false,
+                AppName = status,
                 Status = status,
             };
 
