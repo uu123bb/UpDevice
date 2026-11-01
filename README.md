@@ -1,6 +1,7 @@
 # UpDevice
 
-> [!CAUCTION]
+> [!WARNING]
+> 
 > 本项目由 **DeepSeek V4.1 Flash** 完成
 
 为 [sleepy](https://github.com/sleepy-project/sleepy) 上报设备信息的 Windows 客户端。
