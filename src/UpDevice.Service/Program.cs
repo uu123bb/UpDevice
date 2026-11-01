@@ -95,6 +95,7 @@ internal static class Program
         Logging.Info($"前台进程: {current.ProcessName}");
         Logging.Info($"窗口标题: {current.WindowTitle}");
         Logging.Info($"窗口类名: {current.ClassName}");
+        Logging.Info($"桌面/锁屏: 锁屏={(foreground.IsLocked ? "是" : "否")}，桌面={(foreground.IsDesktop ? "是" : "否")}");
         Logging.Info($"空闲时长: {activity.IdleSeconds(config.Report.ControllerEnabled):F0}s (阈值 {config.Report.IdleTimeoutSeconds}s)");
         Logging.Info($"电池: {(battery.IsAvailable ? battery.Format(config.Texts) : "不可用")}");
         Logging.Info($"SMTC: {(smtc.Current is { } playing ? $"{playing.Source} - {playing.Title}" : "无")}");

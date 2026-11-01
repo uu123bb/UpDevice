@@ -1,14 +1,35 @@
 namespace UpDevice.Service.Capture;
 
+/// <summary>前台窗口的处置结果。</summary>
+internal enum ForegroundVerdict
+{
+    /// <summary>正常应用，更新当前前台信息。</summary>
+    Accept,
+
+    /// <summary>临时浮层（Alt+Tab、通知中心、输入法…），保留上一次的结果，不更新。</summary>
+    Skip,
+
+    /// <summary>
+    /// 桌面：没有前台应用，文案显示待机；
+    /// 但**不等于离线** —— 可能只是坐在桌面上等任务，是否离线交给空闲时间判断。
+    /// </summary>
+    Desktop,
+
+    /// <summary>锁屏：用户确实不在，直接离线。</summary>
+    Locked,
+}
+
 /// <summary>
-/// 前台窗口的屏蔽规则。
+/// 前台窗口的判定规则。
 ///
-/// Windows 有一批「临时浮层」会抢走前台窗口：开始菜单、Alt+Tab、通知中心、输入法候选框、
-/// 任务栏预览等。它们不是用户真正在用的应用，上报出去会变成一串莫名其妙的窗口名。
-/// 命中这里的窗口**不更新**当前前台信息，保留上一次有效结果。
+/// 分四档，别混在一起：
+///   Locked  —— 锁屏：直接离线
+///   Desktop —— 桌面：文案显示待机，但在线状态交给空闲时间（可能在等任务）
+///   Skip    —— 临时浮层：保留上一次的应用名（否则状态会抖）
+///   Accept  —— 其余：正常应用
 ///
 /// 标题清单参照 sleepy 官方客户端 client/win_device.py 的 SKIPPED_NAMES / NOT_USING_NAMES，
-/// 另外补了进程名与窗口类名两维度的判断（有些浮层的标题是随内容变的，抓不住）。
+/// 另外补了进程名与窗口类名两维度的判断（有些浮层标题随内容变，靠标题抓不住）。
 /// </summary>
 internal static class ForegroundFilter
 {
@@ -43,19 +64,29 @@ internal static class ForegroundFilter
         "SearchHost.exe",               // 搜索
         "SearchApp.exe",                // 搜索（旧版）
         "TextInputHost.exe",            // 输入法候选窗
-        "LockApp.exe",                  // 锁屏
         "Widgets.exe",                  // 小组件
         "WidgetService.exe",
     };
 
+    /// <summary>锁屏进程：用户不在用电脑，应报待机。</summary>
+    private static readonly HashSet<string> LockScreenProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LockApp.exe",
+    };
+
+    /// <summary>桌面窗口类名：前台是它说明用户回到了桌面。</summary>
+    private static readonly HashSet<string> DesktopClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Progman",      // 桌面
+        "WorkerW",      // 桌面（壁纸层）
+    };
+
     /// <summary>
-    /// 桌面、任务栏、Alt+Tab 之类的窗口类名。
+    /// 任务栏、Alt+Tab 之类的窗口类名。
     /// 没有把 Windows.UI.Core.CoreWindow 放进来 —— UWP 应用本体也用它，会被误杀。
     /// </summary>
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Progman",                                  // 桌面
-        "WorkerW",                                  // 桌面（壁纸层）
         "Shell_TrayWnd",                            // 任务栏
         "Shell_SecondaryTrayWnd",                   // 副屏任务栏
         "NotifyIconOverflowWindow",                 // 托盘溢出
@@ -67,23 +98,46 @@ internal static class ForegroundFilter
         "IME",                                      // 输入法
     };
 
-    public static bool ShouldIgnore(ForegroundInfo info)
+    public static ForegroundVerdict Evaluate(ForegroundInfo info, bool sessionLocked)
     {
+        // 锁屏：人确实不在
+        if (sessionLocked)
+        {
+            return ForegroundVerdict.Locked;
+        }
+
+        if (info.ProcessName.Length > 0 && LockScreenProcesses.Contains(info.ProcessName))
+        {
+            return ForegroundVerdict.Locked;
+        }
+
+        // 桌面：文案待机，但在不在线看空闲时间
+        if (info.ClassName.Length > 0 && DesktopClasses.Contains(info.ClassName))
+        {
+            return ForegroundVerdict.Desktop;
+        }
+
+        // 临时浮层：保留上一次
         if (info.IsEmpty)
         {
-            return true;
+            return ForegroundVerdict.Skip;
         }
 
         if (IgnoredTitles.Contains(info.WindowTitle))
         {
-            return true;
+            return ForegroundVerdict.Skip;
         }
 
         if (info.ProcessName.Length > 0 && IgnoredProcesses.Contains(info.ProcessName))
         {
-            return true;
+            return ForegroundVerdict.Skip;
         }
 
-        return info.ClassName.Length > 0 && IgnoredClasses.Contains(info.ClassName);
+        if (info.ClassName.Length > 0 && IgnoredClasses.Contains(info.ClassName))
+        {
+            return ForegroundVerdict.Skip;
+        }
+
+        return ForegroundVerdict.Accept;
     }
 }

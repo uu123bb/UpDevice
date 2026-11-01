@@ -25,9 +25,17 @@ public sealed class ForegroundCapture : IDisposable
     private readonly uint _selfProcessId = (uint)Environment.ProcessId;
 
     private volatile ForegroundInfo _current = ForegroundInfo.Empty;
+    private volatile bool _locked;
+    private volatile bool _desktop;
     private Task? _loop;
 
     public ForegroundInfo Current => _current;
+
+    /// <summary>锁屏中 —— 应当直接置为离线。</summary>
+    public bool IsLocked => _locked;
+
+    /// <summary>前台是桌面 —— 文案显示待机，但在不在线仍由空闲时间决定。</summary>
+    public bool IsDesktop => _desktop;
 
     public void Start()
     {
@@ -60,9 +68,22 @@ public sealed class ForegroundCapture : IDisposable
 
     private void CaptureOnce()
     {
+        // 锁屏时前台窗口可能是空的或停在 LockApp 上，先判一次会话状态。
+        // 会话没锁定就先把锁屏标记清掉，避免解锁后一直停在离线。
+        var sessionLocked = Native.NativeMethods.IsSessionLocked();
+        if (!sessionLocked)
+        {
+            _locked = false;
+        }
+
         var hWnd = Native.NativeMethods.GetForegroundWindow();
         if (hWnd == IntPtr.Zero)
         {
+            if (sessionLocked)
+            {
+                _locked = true;
+            }
+
             return;
         }
 
@@ -78,14 +99,27 @@ public sealed class ForegroundCapture : IDisposable
 
         var info = new ForegroundInfo(process, title, className, DateTime.Now);
 
-        // 桌面、开始菜单、Alt+Tab、输入法候选框这类浮层直接丢弃，
-        // 保留上一次有效的前台信息（详见 ForegroundFilter）。
-        if (ForegroundFilter.ShouldIgnore(info))
+        switch (ForegroundFilter.Evaluate(info, sessionLocked))
         {
-            return;
-        }
+            case ForegroundVerdict.Locked:
+                // 锁屏：直接离线。
+                _locked = true;
+                return;
 
-        _current = info;
+            case ForegroundVerdict.Desktop:
+                // 桌面：保留 _current（回到应用能立刻恢复），只是文案显示待机。
+                _desktop = true;
+                return;
+
+            case ForegroundVerdict.Skip:
+                // 临时浮层：什么都不改，保留上一次的判断结果。
+                return;
+
+            default:
+                _desktop = false;
+                _current = info;
+                return;
+        }
     }
 
     private string ResolveProcessName(uint pid)

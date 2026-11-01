@@ -133,9 +133,15 @@ public sealed class SleepyClient : IDisposable
 
             return true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             throw;
+        }
+        catch (TaskCanceledException)
+        {
+            // HttpClient 超时也是 TaskCanceledException，原始消息没有信息量。
+            Logging.Warn($"上报请求超时（{_http.Timeout.TotalSeconds:F0} 秒）：{url}");
+            return false;
         }
         catch (Exception ex)
         {
@@ -195,9 +201,14 @@ public sealed class SleepyClient : IDisposable
             Logging.Info($"已删除设备 {deviceId}");
             return true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             throw;
+        }
+        catch (TaskCanceledException)
+        {
+            Logging.Warn($"删除设备 {deviceId} 请求超时（{_http.Timeout.TotalSeconds:F0} 秒）");
+            return false;
         }
         catch (Exception ex)
         {

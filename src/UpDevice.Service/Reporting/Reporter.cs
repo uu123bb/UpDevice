@@ -229,8 +229,12 @@ public sealed class Reporter : IDisposable
     /// <summary>按当前各项采集结果算出要上报的状态。</summary>
     public (bool Using, string Status) Compose(AppConfig config)
     {
+        // 文案看「有没有前台应用」：锁屏、桌面、抓不到窗口都显示待机。
+        // 而在不在线只看空闲时间（锁屏除外）—— 坐在桌面上等任务不该被判离线。
+        var noApp = _foreground.IsLocked || _foreground.IsDesktop || _foreground.Current.IsEmpty;
         var idle = IsDeviceIdle(config);
-        var core = idle ? ComposeIdle(config) : ComposeActive(config);
+
+        var core = noApp ? ComposeIdle(config) : ComposeActive(config);
 
         var prefix = string.Empty;
         if (config.Report.PortableMode && _battery.Format(config.Texts) is { } batteryText)
@@ -311,10 +315,14 @@ public sealed class Reporter : IDisposable
             .ConfigureAwait(false);
     }
 
-    /// <summary>本机是否处于待机：无有效前台窗口，或超过超时时间没有输入。</summary>
+    /// <summary>
+    /// 是否该置为离线：锁屏、抓不到前台窗口，或超过超时时间没有输入。
+    /// **桌面不算** —— 在桌面等任务时用户仍然在电脑前。
+    /// </summary>
     private bool IsDeviceIdle(AppConfig config)
     {
-        return _foreground.Current.IsEmpty
+        return _foreground.IsLocked
+            || _foreground.Current.IsEmpty
             || _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
     }
 
