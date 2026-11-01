@@ -3,8 +3,8 @@ using Windows.Media.Control;
 
 namespace UpDevice.Service.Media;
 
-/// <summary>当前播放信息。</summary>
-public sealed record NowPlaying(string Source, string Title, string Artist);
+/// <summary>当前播放信息。暂停时 <see cref="IsPlaying"/> 为 false，但信息仍然保留。</summary>
+public sealed record NowPlaying(string Source, string Title, string Artist, bool IsPlaying);
 
 /// <summary>
 /// 通过 SMTC 获取系统正在播放的媒体。
@@ -25,7 +25,10 @@ public sealed class SmtcMonitor : IDisposable
 
     private volatile NowPlaying? _current;
 
-    /// <summary>当前正在播放的、且属于受支持来源的媒体；没有则为 null。</summary>
+    /// <summary>
+    /// 最近一次检测到的受支持媒体（含暂停状态；暂停时 <c>IsPlaying</c> 为 false）。
+    /// 没有任何受支持会话时为 null。
+    /// </summary>
     public NowPlaying? Current => _current;
 
     public void Start()
@@ -64,6 +67,8 @@ public sealed class SmtcMonitor : IDisposable
         var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask().ConfigureAwait(false);
         var sessions = manager.GetSessions();
 
+        NowPlaying? paused = null;
+
         foreach (var session in sessions)
         {
             var source = ResolveSource(session.SourceAppUserModelId);
@@ -73,10 +78,7 @@ public sealed class SmtcMonitor : IDisposable
             }
 
             var playback = session.GetPlaybackInfo();
-            if (playback.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-            {
-                continue;
-            }
+            var isPlaying = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
 
             var properties = await session.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
             var title = properties?.Title ?? string.Empty;
@@ -85,11 +87,20 @@ public sealed class SmtcMonitor : IDisposable
                 continue;
             }
 
-            _current = new NowPlaying(source, title.Trim(), properties?.Artist ?? string.Empty);
-            return;
+            var snapshot = new NowPlaying(source, title.Trim(), properties?.Artist ?? string.Empty, isPlaying);
+
+            // 有正在播放的就直接返回；只有暂停的会话先留着，最后兜底用。
+            if (isPlaying)
+            {
+                _current = snapshot;
+                return;
+            }
+
+            paused ??= snapshot;
         }
 
-        _current = null;
+        // 暂停时信息依然保留，只是标记为未播放。
+        _current = paused;
     }
 
     private static string? ResolveSource(string? appUserModelId)

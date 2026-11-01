@@ -42,8 +42,10 @@ public sealed class Reporter : IDisposable
     private readonly object _gate = new();
 
     private (bool Using, string Status)? _lastSent;
+    private (bool Using, string Status)? _lastSmtcSent;
     private string? _lastForegroundText;
     private bool _warnedNoServer;
+    private bool _warnedSmtcInvalid;
 
     public Reporter(
         ConfigStore store,
@@ -76,8 +78,10 @@ public sealed class Reporter : IDisposable
         lock (_gate)
         {
             _lastSent = null;
+            _lastSmtcSent = null;
             _lastForegroundText = null;
             _warnedNoServer = false;
+            _warnedSmtcInvalid = false;
         }
     }
 
@@ -130,9 +134,35 @@ public sealed class Reporter : IDisposable
 
         var (usingFlag, status) = Compose(config);
 
+        // 关闭 SMTC 单独上报后，要把留下那个设备删掉。托盘的改动可能发生在主进程没运行时，
+        // 所以这一步放在循环里做，标记只有删除成功才清除。
+        await ProcessPendingRemovalAsync(config, token).ConfigureAwait(false);
+
+        await SendAsync(config, config.Remote.DeviceId, config.Remote.ShowName, usingFlag, status, isMain: true, token)
+            .ConfigureAwait(false);
+
+        if (config.Report.SmtcMode == SmtcModes.Separate && ComposeSmtc(config) is { } smtc)
+        {
+            await SendAsync(config, config.Smtc.DeviceId, config.Smtc.ShowName, smtc.Using, smtc.Status, isMain: false, token)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>主设备与 SMTC 设备各自去重、各自上报。</summary>
+    private async Task SendAsync(
+        AppConfig config,
+        string deviceId,
+        string showName,
+        bool usingFlag,
+        string status,
+        bool isMain,
+        CancellationToken token)
+    {
         lock (_gate)
         {
-            if (config.Report.OnlyOnChange && _lastSent is { } last && last.Using == usingFlag && last.Status == status)
+            var last = isMain ? _lastSent : _lastSmtcSent;
+            if (config.Report.OnlyOnChange && last is { } previous
+                && previous.Using == usingFlag && previous.Status == status)
             {
                 return;
             }
@@ -140,8 +170,8 @@ public sealed class Reporter : IDisposable
 
         var payload = new DevicePayload
         {
-            Id = config.Remote.DeviceId,
-            ShowName = config.Remote.ShowName,
+            Id = deviceId,
+            ShowName = showName,
             Using = usingFlag,
             AppName = status,
             Status = status,
@@ -149,24 +179,50 @@ public sealed class Reporter : IDisposable
 
         if (_dryRun)
         {
-            Logging.Info($"[DRY-RUN] using={usingFlag} status=\"{status}\"");
-            Remember(usingFlag, status);
+            Logging.Info($"[DRY-RUN] {deviceId} using={usingFlag} status=\"{status}\"");
+            Remember(usingFlag, status, isMain);
             return;
         }
 
         var ok = await _client.SendAsync(config.Remote, payload, token).ConfigureAwait(false);
         if (ok)
         {
-            Logging.Info($"已上报 using={usingFlag} status=\"{status}\"");
-            Remember(usingFlag, status);
+            Logging.Info($"已上报 [{deviceId}] using={usingFlag} status=\"{status}\"");
+            Remember(usingFlag, status, isMain);
         }
     }
 
-    private void Remember(bool usingFlag, string status)
+    private async Task ProcessPendingRemovalAsync(AppConfig config, CancellationToken token)
+    {
+        var pending = config.Smtc.PendingRemoveId;
+        if (string.IsNullOrWhiteSpace(pending))
+        {
+            return;
+        }
+
+        var removed = await _client.RemoveDeviceAsync(config.Remote, pending, token).ConfigureAwait(false);
+        if (!removed)
+        {
+            return;
+        }
+
+        config.Smtc.PendingRemoveId = string.Empty;
+        _store.Save(config);
+        Logging.Info($"SMTC 设备 {pending} 已删除，标记清除");
+    }
+
+    private void Remember(bool usingFlag, string status, bool isMain)
     {
         lock (_gate)
         {
-            _lastSent = (usingFlag, status);
+            if (isMain)
+            {
+                _lastSent = (usingFlag, status);
+            }
+            else
+            {
+                _lastSmtcSent = (usingFlag, status);
+            }
         }
     }
 
@@ -187,12 +243,59 @@ public sealed class Reporter : IDisposable
 
     private string ComposeIdle(AppConfig config)
     {
-        if (config.Report.SmtcMode == SmtcModes.Idle && _smtc.Current is { } playing)
+        // 只有「仅在待机时上报」才把播放信息写进本设备；单独上报模式下它归 SMTC 设备。
+        if (config.Report.SmtcMode == SmtcModes.Idle && _smtc.Current is { IsPlaying: true } playing)
         {
             return FormatNowPlaying(playing);
         }
 
         return IdleText;
+    }
+
+    /// <summary>
+    /// 计算 SMTC 设备的文案。返回 null 表示这次不报（配置不完整或 ID 冲突）。
+    ///
+    /// 规则：
+    ///   无受支持会话      → 离线，文案「待机」
+    ///   暂停播放          → 离线，但保留歌曲信息
+    ///   本机判定为待机    → 离线，不管是否在播（信息保留）
+    ///   正在播放且本机活跃 → 在线
+    /// </summary>
+    private (bool Using, string Status)? ComposeSmtc(AppConfig config)
+    {
+        var smtc = config.Smtc;
+
+        if (string.IsNullOrWhiteSpace(smtc.DeviceId) || string.IsNullOrWhiteSpace(smtc.ShowName))
+        {
+            WarnSmtcOnce("SMTC 单独上报已开启，但 SMTC 设备 ID 或设备名为空，本次跳过");
+            return null;
+        }
+
+        if (string.Equals(smtc.DeviceId, config.Remote.DeviceId, StringComparison.OrdinalIgnoreCase))
+        {
+            WarnSmtcOnce("SMTC 设备 ID 不能与本机设备 ID 相同，本次跳过");
+            return null;
+        }
+
+        var nowPlaying = _smtc.Current;
+        if (nowPlaying is null)
+        {
+            return (false, IdleText);
+        }
+
+        var idle = _activity.IsIdle(config.Report.IdleTimeoutSeconds, config.Report.ControllerEnabled);
+        return (nowPlaying.IsPlaying && !idle, FormatNowPlaying(nowPlaying));
+    }
+
+    private void WarnSmtcOnce(string message)
+    {
+        if (_warnedSmtcInvalid)
+        {
+            return;
+        }
+
+        _warnedSmtcInvalid = true;
+        Logging.Warn(message);
     }
 
     private string ComposeActive(AppConfig config)

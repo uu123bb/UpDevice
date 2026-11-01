@@ -5,12 +5,25 @@ namespace UpDevice.Shared.Config;
 /// </summary>
 public sealed class AppConfig
 {
+    /// <summary>当前配置结构版本。加字段或改语义时 +1，并在 ConfigStore 里补迁移。</summary>
+    public const int CurrentVersion = 2;
+
+    /// <summary>
+    /// 配置结构版本。**默认 0 表示「未标注版本」**（v1 时代写的文件没有这个字段），
+    /// 加载后会被升级到 <see cref="CurrentVersion"/>。
+    /// 不能把默认值设成 CurrentVersion，否则老配置会被误判成新版，迁移就永远不触发。
+    /// </summary>
+    public int Version { get; set; }
+
     /// <summary>开始上报 / 停止上报（对应配置页的切换式按钮）。</summary>
     public bool ReportingEnabled { get; set; } = true;
 
     public RemoteConfig Remote { get; set; } = new();
 
     public ReportConfig Report { get; set; } = new();
+
+    /// <summary>SMTC 单独上报成一个设备时的配置（v2 新增）。</summary>
+    public SmtcConfig Smtc { get; set; } = new();
 
     public TextConfig Texts { get; set; } = new();
 
@@ -19,6 +32,7 @@ public sealed class AppConfig
     {
         Report ??= new ReportConfig();
         Remote ??= new RemoteConfig();
+        Smtc ??= new SmtcConfig();
         Texts ??= new TextConfig();
 
         Remote.ServerUrl = (Remote.ServerUrl ?? string.Empty).Trim();
@@ -35,14 +49,20 @@ public sealed class AppConfig
             ? Report.StatusFormat
             : StatusFormats.Window;
 
-        Report.SmtcMode = Report.SmtcMode is SmtcModes.Off or SmtcModes.Idle ? Report.SmtcMode : SmtcModes.Idle;
+        Report.SmtcMode = Report.SmtcMode is SmtcModes.Off or SmtcModes.Idle or SmtcModes.Separate
+            ? Report.SmtcMode
+            : SmtcModes.Idle;
+
+        Smtc.DeviceId = (Smtc.DeviceId ?? string.Empty).Trim();
+        Smtc.ShowName = (Smtc.ShowName ?? string.Empty).Trim();
+        Smtc.PendingRemoveId = (Smtc.PendingRemoveId ?? string.Empty).Trim();
 
         Texts.Shutdown = string.IsNullOrWhiteSpace(Texts.Shutdown) ? "设备关闭" : Texts.Shutdown;
         Texts.BatteryOnBattery = string.IsNullOrWhiteSpace(Texts.BatteryOnBattery) ? "未在充电 %battery%" : Texts.BatteryOnBattery;
         Texts.BatteryOnAc = string.IsNullOrWhiteSpace(Texts.BatteryOnAc) ? "正在充电 %battery%" : Texts.BatteryOnAc;
     }
 
-    public static AppConfig CreateDefault() => new();
+    public static AppConfig CreateDefault() => new() { Version = CurrentVersion };
 }
 
 public sealed class RemoteConfig
@@ -113,5 +133,26 @@ public static class StatusFormats
 public static class SmtcModes
 {
     public const string Off = "off";
+
+    /// <summary>仅在待机时把播放信息写进本设备的文案。</summary>
     public const string Idle = "idle";
+
+    /// <summary>播放信息单独上报成一个设备。</summary>
+    public const string Separate = "separate";
+}
+
+/// <summary>SMTC 单独上报成一个设备时的设置。</summary>
+public sealed class SmtcConfig
+{
+    /// <summary>上报 SMTC 信息时使用的设备 ID，不能与本机设备 ID 相同。</summary>
+    public string DeviceId { get; set; } = string.Empty;
+
+    /// <summary>上报 SMTC 信息时使用的设备名。</summary>
+    public string ShowName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 待删除的 SMTC 设备 ID。关闭单独上报（或改了设备 ID）时由托盘写入，
+    /// 主进程删除成功后清空 —— 这样即使当时主进程没在跑，下次启动也会补删。
+    /// </summary>
+    public string PendingRemoveId { get; set; } = string.Empty;
 }

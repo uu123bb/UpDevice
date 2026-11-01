@@ -107,7 +107,23 @@ internal sealed class TrayWebHost
                 return Results.BadRequest(new { ok = false, message = "配置内容无法解析" });
             }
 
+            var previous = _store.Current;
             incoming.Normalize();
+
+            if (incoming.Report.SmtcMode == SmtcModes.Separate)
+            {
+                if (string.IsNullOrWhiteSpace(incoming.Smtc.DeviceId) || string.IsNullOrWhiteSpace(incoming.Smtc.ShowName))
+                {
+                    return Results.BadRequest(new { ok = false, message = "单独上报需要填写 SMTC 设备名称与设备 ID" });
+                }
+
+                if (string.Equals(incoming.Smtc.DeviceId, incoming.Remote.DeviceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new { ok = false, message = "SMTC 设备 ID 不能和设备的设备 ID 相同" });
+                }
+            }
+
+            ScheduleSmtcRemoval(previous, incoming);
             _store.Save(incoming);
 
             var notified = Ipc.SendCommand("reload");
@@ -228,6 +244,36 @@ internal sealed class TrayWebHost
         {
             return (false, $"密钥校验失败：{ex.GetBaseException().Message}");
         }
+    }
+
+    /// <summary>
+    /// 关闭「单独上报」或改了 SMTC 设备 ID 时，把旧设备标记为待删除。
+    /// 真正删除由主进程执行 —— 托盘不一定连得上服务端，而主进程本来就在跑上报循环；
+    /// 标记只有删除成功才会被清掉，所以主进程没运行时下次启动也会补删。
+    /// </summary>
+    private static void ScheduleSmtcRemoval(AppConfig previous, AppConfig incoming)
+    {
+        var previousId = previous.Smtc.DeviceId;
+
+        if (previous.Report.SmtcMode != SmtcModes.Separate || string.IsNullOrWhiteSpace(previousId))
+        {
+            return;
+        }
+
+        if (string.Equals(previousId, previous.Remote.DeviceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var stillSeparate = incoming.Report.SmtcMode == SmtcModes.Separate;
+        var sameId = string.Equals(previousId, incoming.Smtc.DeviceId, StringComparison.OrdinalIgnoreCase);
+        if (stillSeparate && sameId)
+        {
+            return;
+        }
+
+        incoming.Smtc.PendingRemoveId = previousId;
+        Logging.Info($"已标记待删除 SMTC 设备 {previousId}");
     }
 
     /// <summary>保存前先克隆一份，避免直接改到正在被主进程读取的实例。</summary>
