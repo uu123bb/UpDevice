@@ -28,6 +28,17 @@ Sleepy 的上报并不是真正意义上的上报，而是调用`/set`接口修�
 
 该项目作为**自动化工具**，获取当前的前台信息并构造信息，然后通过用户设置的`远端地址` `SECRET` `设备ID`将当前设备的状态上传到 Sleepy
 
+## 技术栈
+
+- 语言 / 运行时：C# / .NET 10（主进程与托盘为 `net10.0-windows10.0.19041.0`，共享库为 `net10.0`）
+- 托盘程序：WinForms（`UseWindowsForms`）+ `NotifyIcon`
+- 主进程隐藏窗口：WinForms `NativeWindow` 承载消息循环
+- 配置界面：内嵌 ASP.NET Core Web 服务（Kestrel + 最小 API），仅绑定 `127.0.0.1`
+- 计划任务：`schtasks`（`ONLOGON` + `HIGHEST`）
+- 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
+- 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
+- 启动方式：计划任务（登录触发）拉起主进程（待修复：无法拉起）
+
 ## 计划
 
 - [x] 基本完成上报部分
