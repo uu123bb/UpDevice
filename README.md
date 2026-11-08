@@ -1,5 +1,7 @@
 # UpDevice
 
+[AI 写的原文档](https://github.com/uu123bb/UpDevice/blob/main/README_AI.md)
+
 > [!WARNING]
 >
 > 项目由 *DeepSeek V4.1 Flash* 完成
