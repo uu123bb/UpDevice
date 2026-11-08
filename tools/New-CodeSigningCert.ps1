@@ -75,8 +75,28 @@ Write-Host ""
 
 if ($Install) {
     Write-Host "安装到当前用户信任存储（受信任的根 + 受信任的发布者）…"
-    Import-Certificate -FilePath $cerPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
-    Import-Certificate -FilePath $cerPath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
+
+    # Import-Certificate 写 Root 时会弹 Windows 的安全确认框，
+    # 在非交互会话（脚本/CI/远程）里会直接失败，所以退回 certutil。
+    foreach ($storeName in @("Root", "TrustedPublisher")) {
+        $added = $false
+        try {
+            Import-Certificate -FilePath $cerPath -CertStoreLocation "Cert:\CurrentUser\$storeName" -ErrorAction Stop | Out-Null
+            $added = $true
+        }
+        catch {
+            $output = certutil -user -addstore $storeName $cerPath 2>&1
+            $added = $LASTEXITCODE -eq 0
+            if (-not $added) {
+                Write-Host ("写入 {0} 失败：{1}" -f $storeName, ($output | Select-Object -Last 1)) -ForegroundColor Red
+            }
+        }
+
+        if ($added) {
+            Write-Host "  已写入 $storeName"
+        }
+    }
+
     Write-Host "已安装。之后用这个证书签名的程序在本机不会再报「未知发布者」。" -ForegroundColor Green
 }
 else {
