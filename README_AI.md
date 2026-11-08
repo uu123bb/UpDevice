@@ -449,6 +449,57 @@ UpDevice/
 
 ChangeLog 用 GitHub 原生的 release notes 生成，分类规则写在 `.github/release.yml`（新功能 / 问题修复 / 文档与构建 / 其他）。
 
+## 代码签名
+
+未签名的 exe 会带来两个麻烦：
+
+| 现象 | 原因 |
+| --- | --- |
+| 双击启动器提示「Windows 已保护你的电脑」，只有「不运行」可选 | 从网络下载的文件带 MOTW 标记 + 发布者无信誉，SmartScreen 直接拦 |
+| UAC 弹窗显示「未知发布者」 | 没有 Authenticode 签名 |
+
+**先说结论：自动更新链路本身不会引入 MOTW。** 更新包由启动器用 `ZipFile` 解压，这种方式不写 Zone.Identifier，所以更新后新版本的文件是「本地文件」，不会被 SmartScreen 拦。只有**首次手动安装**（浏览器下载 zip 再解压）会遇到。
+
+### 首次安装被拦怎么办
+
+任选一种：
+
+```powershell
+# 解除单个文件的锁定
+Unblock-File .\UpDevice.Launcher.exe
+```
+
+或右键文件 → 属性 → 底部勾选「解除锁定」。批量处理整个目录：
+
+```powershell
+Get-ChildItem -Recurse | Unblock-File
+```
+
+### 签名
+
+`tools/New-CodeSigningCert.ps1` 生成本机自签名代码签名证书：
+
+```powershell
+# 生成证书（pfx + cer），打印出 CI 需要的 base64 与密码
+.\tools\New-CodeSigningCert.ps1
+
+# 生成并装进当前用户的「受信任的根证书颁发机构」+「受信任的发布者」
+.\tools\New-CodeSigningCert.ps1 -Install
+```
+
+装进信任存储后，用它签名的程序：UAC 显示证书里的发布者名，SmartScreen 至少会给「仍要运行」的入口，而不是只剩「不运行」。
+
+CI 侧只要配置两个 secret 就会自动签名，没配置则跳过（产物无签名，仍可运行）：
+
+| Secret | 内容 |
+| --- | --- |
+| `SIGNING_PFX_BASE64` | pfx 文件的 base64 |
+| `SIGNING_PFX_PASSWORD` | pfx 密码 |
+
+签名步骤在「整理产物」之后、「打包 ZIP」之前，会给 `publish/` 下所有 `UpDevice.*.exe` 签名，时间戳服务器失败时退化为不带时间戳签名。
+
+**自签名换不来信誉。** SmartScreen 对陌生发布者仍可能提示，真正的信誉只有 OV/EV 证书有。自签名的实际收益是：UAC 不再显示「未知发布者」、杀软误报更少、用户可自行决定是否信任。
+
 ## 分支约定
 
 - `main`：稳定分支，仅接受可发布的变更

@@ -133,6 +133,46 @@ jobs:
           Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
+      # 配置了证书才签名，没配置就跳过 —— 无签名的包也能跑，只是会弹「未知发布者」
+      - name: 代码签名（可选）
+        shell: pwsh
+        run: |
+          $base64 = "${{ secrets.SIGNING_PFX_BASE64 }}"
+          if ([string]::IsNullOrWhiteSpace($base64)) {
+            Write-Host "未配置 SIGNING_PFX_BASE64，跳过签名" -ForegroundColor Yellow
+            exit 0
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
+
+          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $pfxPath,
+            "${{ secrets.SIGNING_PFX_PASSWORD }}",
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+
+          Write-Host "使用证书: $($cert.Subject) ($($cert.Thumbprint))"
+
+          $targets = Get-ChildItem -Path publish -Recurse -Filter *.exe |
+            Where-Object { $_.Name -like "UpDevice.*.exe" }
+
+          foreach ($target in $targets) {
+            try {
+              $result = Set-AuthenticodeSignature -FilePath $target.FullName -Certificate $cert `
+                -HashAlgorithm SHA256 -TimestampServer "http://timestamp.digicert.com"
+            }
+            catch {
+              # 时间戳服务器偶尔抽风，退化成不带时间戳签名（证书过期后签名才会失效）
+              Write-Host "时间戳失败，改为不带时间戳签名：$($_.Exception.Message)" -ForegroundColor Yellow
+              $result = Set-AuthenticodeSignature -FilePath $target.FullName -Certificate $cert -HashAlgorithm SHA256
+            }
+
+            Write-Host ("{0} → {1}" -f $target.Name, $result.Status)
+            if ($result.Status -ne "Valid") {
+              throw "签名失败: $($target.Name) ($($result.StatusMessage))"
+            }
+          }
+
       - name: 打包 ZIP
         id: zip
         shell: pwsh
