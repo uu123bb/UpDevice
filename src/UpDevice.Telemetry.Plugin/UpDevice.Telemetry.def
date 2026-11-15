@@ -1,0 +1,10 @@
+; 插件导出表。
+;
+; 为什么不直接在函数上加 __declspec(dllexport)：SCS SDK 头文件里的声明是普通声明，
+; 如果定义上再挂 dllexport，MSVC 会报 C2375（redefinition; different linkage）。
+; 官方示例同样用 .def 文件导出，MinGW 与 MSVC 都认这个文件。
+LIBRARY UpDevice.Telemetry
+
+EXPORTS
+    scs_telemetry_init
+    scs_telemetry_shutdown
