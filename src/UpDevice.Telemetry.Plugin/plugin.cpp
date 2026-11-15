@@ -551,9 +551,11 @@ static void upd_reset_state(void)
     g_state.game = UPD_GAME_UNKNOWN;
 }
 
+// 导出靠同目录的 UpDevice.Telemetry.def（不在函数上加 __declspec(dllexport)：
+// SDK 头文件里是普通声明，加了 MSVC 会报 C2375 redefinition; different linkage）。
 extern "C" {
 
-__declspec(dllexport) SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version,
+SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version,
                                                        const scs_telemetry_init_params_t *const params)
 {
     if (version != SCS_TELEMETRY_VERSION_1_00 && version != SCS_TELEMETRY_VERSION_1_01)
@@ -604,7 +606,7 @@ __declspec(dllexport) SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version,
     return SCS_RESULT_ok;
 }
 
-__declspec(dllexport) SCSAPI_VOID scs_telemetry_shutdown(void)
+SCSAPI_VOID scs_telemetry_shutdown(void)
 {
     upd_close_shared_memory();
 
