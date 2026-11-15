@@ -9,6 +9,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using UpDevice.Shared;
 using UpDevice.Shared.Config;
+using UpDevice.Shared.Trucking;
+using UpDevice.Tray.Trucking;
 
 namespace UpDevice.Tray;
 
@@ -22,6 +24,7 @@ internal sealed class TrayWebHost
     private const int PortSearchRange = 10;
 
     private readonly ConfigStore _store;
+    private readonly TruckTelemetryReader _telemetry = new();
 
     private WebApplication? _application;
 
@@ -169,6 +172,88 @@ internal sealed class TrayWebHost
             return Results.Json(new { ok, message, scheduledTaskEnabled = ScheduledTask.IsEnabled() });
         });
 
+        // ---- 公路与车辆（ATS / ETS2 遥测）----
+
+        application.MapGet("/api/trucking", () => Results.Json(TruckingState()));
+
+        application.MapPost("/api/trucking/path", async (HttpRequest request) =>
+        {
+            var (parsed, body) = await TryReadAsync<TruckGameRequest>(request);
+            if (!parsed || body is null || string.IsNullOrWhiteSpace(body.Id))
+            {
+                return Results.BadRequest(new { ok = false, message = "请求内容无法解析" });
+            }
+
+            var config = Clone(_store.Current);
+            var (ok, message, _) = TruckPluginManager.SetCustomPath(body.Id, body.Path, config.Trucking);
+            if (!ok)
+            {
+                return Results.Json(new { ok, message });
+            }
+
+            _store.Save(config);
+            return Results.Json(new { ok, message, state = TruckingState() });
+        });
+
+        application.MapPost("/api/trucking/install", async (HttpRequest request) =>
+        {
+            var (parsed, body) = await TryReadAsync<TruckGameRequest>(request);
+            if (!parsed || body is null || string.IsNullOrWhiteSpace(body.Id))
+            {
+                return Results.BadRequest(new { ok = false, message = "请求内容无法解析" });
+            }
+
+            // 表单里带了路径就顺手存下来，用户点「安装」不用先点「保存」。
+            if (!string.IsNullOrWhiteSpace(body.Path))
+            {
+                var config = Clone(_store.Current);
+                var (pathOk, pathMessage, _) = TruckPluginManager.SetCustomPath(body.Id, body.Path, config.Trucking);
+                if (!pathOk)
+                {
+                    return Results.Json(new { ok = false, message = pathMessage });
+                }
+
+                _store.Save(config);
+            }
+
+            var (ok, message) = TruckPluginManager.Install(body.Id, null, _store.Current.Trucking);
+            return Results.Json(new { ok, message, state = TruckingState() });
+        });
+
+        application.MapPost("/api/trucking/uninstall", async (HttpRequest request) =>
+        {
+            var (parsed, body) = await TryReadAsync<TruckGameRequest>(request);
+            if (!parsed || body is null || string.IsNullOrWhiteSpace(body.Id))
+            {
+                return Results.BadRequest(new { ok = false, message = "请求内容无法解析" });
+            }
+
+            var (ok, message) = TruckPluginManager.Uninstall(body.Id, null, _store.Current.Trucking);
+            return Results.Json(new { ok, message, state = TruckingState() });
+        });
+
+        // 预览：游戏在跑就用真实遥测，否则用示例数据 —— 让用户改格式串时立刻看到效果。
+        application.MapPost("/api/trucking/preview", async (HttpRequest request) =>
+        {
+            var (_, body) = await TryReadAsync<TruckPreviewRequest>(request);
+            var config = _store.Current.Trucking;
+            var format = string.IsNullOrWhiteSpace(body?.Format) ? config.Format : body!.Format!;
+            var imperial = body?.Imperial ?? config.Imperial;
+
+            var live = _telemetry.TryRead(out var snapshot) && snapshot is not null;
+            var data = live ? snapshot! : TruckingFormat.Sample();
+            var text = TruckingFormat.Render(format, data, live ? null : TruckingFormat.SampleSmtc, imperial);
+
+            return Results.Json(new
+            {
+                ok = true,
+                live,
+                text,
+                game = data.GameName,
+                hint = live ? "正在使用游戏实时数据" : "游戏未运行，以下为示例数据",
+            });
+        });
+
         application.MapPost("/api/test", async (HttpRequest request) =>
         {
             var (_, body) = await TryReadAsync<TestRequest>(request);
@@ -264,6 +349,31 @@ internal sealed class TrayWebHost
 
             return Results.Json(new { ok = true, message = "开始更新，程序将退出并在完成后自动重启" });
         });
+    }
+
+    /// <summary>遥测设置页需要的全部状态：配置 + 变量表 + 两个游戏的探测结果。</summary>
+    private object TruckingState()
+    {
+        var config = _store.Current.Trucking;
+        return new
+        {
+            enabled = config.Enabled,
+            format = config.Format,
+            imperial = config.Imperial,
+            pluginAvailable = File.Exists(TruckPluginManager.BundledPluginPath),
+            pluginFileName = TruckPluginManager.PluginFileName,
+            variables = TruckingFormat.Variables.Select(v => new { v.Name, v.Aliases, v.Label, v.Explain }),
+            games = TruckPluginManager.Detect(config).Select(g => new
+            {
+                g.Id,
+                g.DisplayName,
+                g.Path,
+                g.Source,
+                g.Installed,
+                g.PluginPath,
+                g.Message,
+            }),
+        };
     }
 
     /// <summary>容错读取请求体：解析失败返回 false，由调用方给出 400，而不是抛 500。</summary>
@@ -369,9 +479,15 @@ internal sealed class TrayWebHost
             await _application.DisposeAsync();
             _application = null;
         }
+
+        _telemetry.Dispose();
     }
 
     private sealed record ToggleRequest(bool Enabled);
+
+    private sealed record TruckGameRequest(string? Id, string? Path);
+
+    private sealed record TruckPreviewRequest(string? Format, bool? Imperial);
 
     private sealed record TestRequest(string? ServerUrl, string? Secret);
 }

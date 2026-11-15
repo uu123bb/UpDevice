@@ -41,6 +41,42 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # 遥测插件是原生 DLL，必须用 MSVC 编（游戏只加载 native plugin）。
+      # 产物放到 csproj 约定的位置，发布托盘时会被自动带进 app-*/Telemetry/。
+      - name: 编译遥测插件
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "找不到 vswhere.exe，无法定位 MSVC"
+          }
+
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) {
+            throw "找不到 MSVC C++ 工具链（需要 Microsoft.VisualStudio.Component.VC.Tools.x86.x64）"
+          }
+
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+
+          $outDir = "src/UpDevice.Telemetry.Plugin/bin/Release"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          cl /nologo /LD /O2 /DNDEBUG `
+            /I src/UpDevice.Telemetry.Plugin/include `
+            src/UpDevice.Telemetry.Plugin/plugin.cpp `
+            /Fe:$outDir/UpDevice.Telemetry.dll `
+            /Fo:$outDir/
+
+          $dll = Join-Path $outDir "UpDevice.Telemetry.dll"
+          if (-not (Test-Path $dll)) {
+            throw "遥测插件编译失败：$dll 未生成"
+          }
+
+          Write-Host "遥测插件已生成: $dll ($([Math]::Round((Get-Item $dll).Length / 1KB, 1)) KB)"
+
       - name: 计算版本号
         id: ver
         shell: pwsh
@@ -129,6 +165,11 @@ jobs:
             throw "打包目录结构不正确：缺少 app-* 目录"
           }
 
+          $plugin = Join-Path $appDir.FullName "Telemetry\UpDevice.Telemetry.dll"
+          if (-not (Test-Path $plugin)) {
+            throw "程序目录里缺少 Telemetry/UpDevice.Telemetry.dll，遥测功能会不可用"
+          }
+
           $appExe = Get-ChildItem -Path $appDir.FullName -Filter *.exe | Select-Object -ExpandProperty Name
           Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
@@ -153,8 +194,10 @@ jobs:
 
           Write-Host "使用证书: $($cert.Subject) ($($cert.Thumbprint))"
 
-          $targets = Get-ChildItem -Path publish -Recurse -Filter *.exe |
-            Where-Object { $_.Name -like "UpDevice.*.exe" }
+          # 插件 DLL 一起签：它会被装进别人的游戏目录，带签名更容易被用户信任
+          $targets = @(Get-ChildItem -Path publish -Recurse -Filter *.exe |
+            Where-Object { $_.Name -like "UpDevice.*.exe" }) +
+            @(Get-ChildItem -Path publish -Recurse -Filter "UpDevice.Telemetry.dll")
 
           foreach ($target in $targets) {
             try {

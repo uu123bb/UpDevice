@@ -25,6 +25,15 @@
     <None Update="Web\index.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!--
+      遥测插件由 CI 用 MSVC 编译到插件项目自己的 bin/ 下，这里只在文件存在时带入发布目录。
+      本地开发没编插件也能正常跑，只是设置页里「安装」会提示找不到插件文件。
+    -->
+    <None Include="..\UpDevice.Telemetry.Plugin\bin\$(Configuration)\UpDevice.Telemetry.dll"
+          Condition="Exists('..\UpDevice.Telemetry.Plugin\bin\$(Configuration)\UpDevice.Telemetry.dll')"
+          Link="Telemetry\UpDevice.Telemetry.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

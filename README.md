@@ -39,6 +39,7 @@ Sleepy 的上报并不是真正意义上的上报，而是调用`/set`接口修�
 - 计划任务：`schtasks`（`ONLOGON` + `HIGHEST`）
 - 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
 - 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
+- 游戏遥测：ATS / ETS2 通过游戏内原生插件（C++ / 官方 SCS 遥测 SDK）写命名共享内存，主进程读取后按模板拼装
 - 启动方式：计划任务（登录触发）拉起主进程（待修复：无法拉起）
 
 ## 计划
@@ -46,6 +47,5 @@ Sleepy 的上报并不是真正意义上的上报，而是调用`/set`接口修�
 - [x] 基本完成上报部分
 - [x] 实现控制器防休眠
 - [x] 自动更新（使用启动器）
-- [ ] ATS/ETS2 遥测数据上报
-- [ ] 配置网页样式更换
+- [x] 公路与车辆（ATS / ETS2 遥测上报）
 - [ ] 适配 [Fork](https://github.com/uu123bb/sleepy_serverless) 的心跳存活模式（待开发）

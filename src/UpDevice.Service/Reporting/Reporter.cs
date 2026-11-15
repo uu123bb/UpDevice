@@ -2,6 +2,7 @@ using UpDevice.Service.Capture;
 using UpDevice.Service.Media;
 using UpDevice.Shared;
 using UpDevice.Shared.Config;
+using UpDevice.Shared.Trucking;
 
 namespace UpDevice.Service.Reporting;
 
@@ -15,6 +16,7 @@ namespace UpDevice.Service.Reporting;
 ///   WorkBuddy（workbuddy.exe）
 ///   待机
 ///   泠鸢yousa - 一梦千霄（NetEase）
+///   [American Truck Simulator] 工作中·85 kph·仍可行驶 780 km（公路与车辆，仅游戏在前台时）
 ///   [未在充电 98%]WorkBuddy
 ///   [正在充电 50%]American Truck Simulator（正在使用控制器）
 ///   [设备关闭]
@@ -36,6 +38,7 @@ public sealed class Reporter : IDisposable
     private readonly BatteryMonitor _battery;
     private readonly SmtcMonitor _smtc;
     private readonly SleepyClient _client;
+    private readonly TruckTelemetryReader _trucking = new();
     private readonly bool _dryRun;
 
     private readonly CancellationTokenSource _cts = new();
@@ -261,7 +264,56 @@ public sealed class Reporter : IDisposable
             return ComposeIdle(config);
         }
 
+        // 公路与车辆：游戏在前台且有遥测时，整条文案换成模板输出。
+        if (TryComposeTrucking(config, out var truckingText))
+        {
+            return truckingText;
+        }
+
         return ComposeActive(config);
+    }
+
+    /// <summary>
+    /// 生成 ATS/ETS2 的遥测文案。
+    ///
+    /// 三个条件缺一不可：全局开关打开、前台进程就是游戏、共享内存里的数据新鲜
+    /// 且 game_id 与前台游戏一致（两个游戏同时开时不会串台）。
+    /// </summary>
+    private bool TryComposeTrucking(AppConfig config, out string text)
+    {
+        text = string.Empty;
+
+        if (!config.Trucking.Enabled)
+        {
+            return false;
+        }
+
+        var game = TruckGames.FromProcess(_foreground.Current.ProcessName);
+        if (game is null || !_trucking.TryRead(out var telemetry) || telemetry is null)
+        {
+            return false;
+        }
+
+        if (!string.Equals(telemetry.GameId, game.TelemetryGameId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var smtc = _smtc.Current is { IsPlaying: true } playing ? FormatNowPlaying(playing) : null;
+        text = TruckingFormat.Render(config.Trucking.Format, telemetry, smtc, config.Trucking.Imperial);
+        return text.Length > 0;
+    }
+
+    /// <summary>供 --once 冒烟测试打印遥测状态。</summary>
+    public string DescribeTelemetry()
+    {
+        if (!_trucking.TryRead(out var telemetry) || telemetry is null)
+        {
+            return "无（插件未加载 / 游戏未运行）";
+        }
+
+        return $"{telemetry.GameName} 车速 {telemetry.SpeedMps * 3.6:F0} kph，油 {telemetry.FuelLiters:F0} L，"
+            + $"任务={(telemetry.JobActive ? telemetry.CargoName : "无")}，数据 {telemetry.AgeMs} ms 前";
     }
 
     private string ComposeDesktop(AppConfig config)
@@ -469,5 +521,6 @@ public sealed class Reporter : IDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
+        _trucking.Dispose();
     }
 }
