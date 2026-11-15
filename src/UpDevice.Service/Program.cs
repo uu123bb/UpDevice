@@ -62,7 +62,8 @@ internal static class Program
 
         Logging.Info(dryRun ? "已进入运行状态（DRY-RUN，不真正发送请求）" : "已进入运行状态");
 
-        // 主进程被单独拉起时，把托盘也带起来（托盘已在运行则跳过）。
+        // 主进程被单独拉起时（手动启动、--once 之外的场景），把托盘也带起来（托盘已在运行则跳过）。
+        // 正常启动方向是反的：计划任务起托盘 → 托盘起主进程，走到这里时托盘一定已经在跑。
         SiblingProcess.EnsureRunning("UpDevice.Tray.exe", @"Local\UpDevice.Tray");
 
         Application.Run(new ApplicationContext());
