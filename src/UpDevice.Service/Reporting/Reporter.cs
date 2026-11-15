@@ -49,6 +49,9 @@ public sealed class Reporter : IDisposable
     private string? _lastForegroundText;
     private bool _warnedNoServer;
     private bool _warnedSmtcInvalid;
+
+    /// <summary>上一次打过的「遥测为什么没生效」原因类型，用来去重日志（每种原因只记一条）。</summary>
+    private string? _truckingWarnedKind;
     private bool _smtcDeviceDeleted;
 
     public Reporter(
@@ -86,6 +89,7 @@ public sealed class Reporter : IDisposable
             _lastForegroundText = null;
             _warnedNoServer = false;
             _warnedSmtcInvalid = false;
+            _truckingWarnedKind = null;
         }
     }
 
@@ -276,8 +280,12 @@ public sealed class Reporter : IDisposable
     /// <summary>
     /// 生成 ATS/ETS2 的遥测文案。
     ///
-    /// 三个条件缺一不可：全局开关打开、前台进程就是游戏、共享内存里的数据新鲜
+    /// 三个条件缺一不可：全局开关打开、**前台就是游戏**、共享内存里的数据新鲜
     /// 且 game_id 与前台游戏一致（两个游戏同时开时不会串台）。
+    ///
+    /// 认游戏先看进程名，认不出来再看窗口标题 —— 游戏以管理员身份启动、或与主进程不在
+    /// 同一完整性级别时，取进程映像名会失败（进程名为空），只有标题还认得出来。
+    /// 三种失败原因都会各记一条日志，方便排查「为什么还是普通前台信息」。
     /// </summary>
     private bool TryComposeTrucking(AppConfig config, out string text)
     {
@@ -288,20 +296,73 @@ public sealed class Reporter : IDisposable
             return false;
         }
 
-        var game = TruckGames.FromProcess(_foreground.Current.ProcessName);
-        if (game is null || !_trucking.TryRead(out var telemetry) || telemetry is null)
+        var info = _foreground.Current;
+        var game = TruckGames.MatchForeground(info.ProcessName, info.WindowTitle);
+
+        if (game is null)
         {
+            // 开关没开就不必打扰用户，功能关着时前台是谁都无所谓。
+            if (config.Trucking.Enabled)
+            {
+                WarnTrucking("not-game", $"前台不是受支持的游戏（进程=\"{info.ProcessName}\"，标题=\"{info.WindowTitle}\"）");
+            }
+
+            return false;
+        }
+
+        if (!config.Trucking.Enabled)
+        {
+            WarnTrucking("disabled", $"{game.DisplayName} 在前台，但「公路与车辆」开关是关闭的，仍上报普通前台信息");
+            return false;
+        }
+
+        if (!_trucking.TryRead(out var telemetry) || telemetry is null)
+        {
+            WarnTrucking("no-telemetry",
+                $"{game.DisplayName} 在前台，但读不到遥测共享内存：插件可能没装，或游戏启动时没加载它");
             return false;
         }
 
         if (!string.Equals(telemetry.GameId, game.TelemetryGameId, StringComparison.OrdinalIgnoreCase))
         {
+            WarnTrucking("mismatch", $"遥测里的游戏是 {telemetry.GameId}，与前台的 {game.TelemetryGameId} 不一致，本次忽略");
             return false;
         }
 
         var smtc = _smtc.Current is { IsPlaying: true } playing ? FormatNowPlaying(playing) : null;
         text = TruckingFormat.Render(config.Trucking.Format, telemetry, smtc, config.Trucking.Imperial);
+
+        // 正常出文案就把告警清掉，下次再出问题还能再记一条。
+        _truckingWarnedKind = null;
         return text.Length > 0;
+    }
+
+    /// <summary>按「原因类型」去重：同一种原因只在状态切换时记一条，避免切窗口把日志刷满。</summary>
+    private void WarnTrucking(string kind, string message)
+    {
+        if (string.Equals(_truckingWarnedKind, kind, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _truckingWarnedKind = kind;
+        Logging.Info($"[公路与车辆] {message}");
+    }
+
+    /// <summary>--once 冒烟测试用：把「前台是谁、认成哪个游戏、遥测能不能读」一次性打出来。</summary>
+    public string DescribeTruckingState(AppConfig config)
+    {
+        var info = _foreground.Current;
+        var game = TruckGames.MatchForeground(info.ProcessName, info.WindowTitle);
+        var readable = _trucking.TryRead(out var telemetry) && telemetry is not null;
+
+        var telemetryText = readable
+            ? $"可用（{telemetry!.GameId}，{telemetry.AgeMs} ms 前写入）"
+            : "不可用（插件未加载 / 游戏未运行）";
+
+        return $"开关={(config.Trucking.Enabled ? "开" : "关")}，"
+            + $"前台=\"{info.ProcessName}\" 标题=\"{info.WindowTitle}\"，"
+            + $"识别={(game?.DisplayName ?? "非游戏")}，遥测={telemetryText}";
     }
 
     /// <summary>供 --once 冒烟测试打印遥测状态。</summary>
