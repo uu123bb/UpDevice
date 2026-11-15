@@ -38,6 +38,9 @@ internal static class Program
             return;
         }
 
+        // 老版本的计划任务指向主进程，现在改由托盘拉起，这里做一次性迁移。
+        ScheduledTask.MigrateLegacy();
+
         // 托盘先起来时把主进程也带起来（主进程已在运行则跳过）。
         SiblingProcess.EnsureRunning("UpDevice.Service.exe", @"Local\UpDevice.Service");
 

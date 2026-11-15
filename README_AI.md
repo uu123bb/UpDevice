@@ -33,7 +33,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 
 > 注意：隐藏窗口必须是**普通顶层窗口**（`ShowInTaskbar = false`），不能用消息专用窗口（`HWND_MESSAGE`）。消息专用窗口收不到 `WM_QUERYENDSESSION` 这类广播消息，用它就永远等不到关机通知。
 
-启动方式：主进程不自己注册为服务，而是由**计划任务（用户登录时触发）**或一个只做拉起的 SCM 服务来启动。后者如果采用，服务本身只能当 launcher —— 需要在用户会话内 `CreateProcessAsUser` 拉起主进程，因为服务进程运行在会话 0。
+启动方式：主进程不自己注册为服务，也不由计划任务直接启动 —— **计划任务启动的是托盘**，托盘再拉起主进程。后者如果采用，服务本身只能当 launcher —— 需要在用户会话内 `CreateProcessAsUser` 拉起主进程，因为服务进程运行在会话 0。
 
 ### 托盘程序（UpDevice.Tray）
 
@@ -131,7 +131,7 @@ sleepy 存在两套接口，本客户端会**自动识别**：先请求 `/query`
 - 计划任务：`schtasks`（`ONLOGON` + `HIGHEST`）
 - 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
 - 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
-- 启动方式：计划任务（登录触发）拉起主进程
+- 启动方式：计划任务（登录触发）拉起**托盘**，主进程由托盘带起（`SiblingProcess.EnsureRunning`）
 
 > 本项目的 SDK 版本与 ClassIsland-Misha 插件保持一致，便于共用同一套 .NET 10 工具链。
 
@@ -423,7 +423,12 @@ UpDevice/
 | `POST /api/test` | 探测远端实例（先 `/query`，再退到 `/api/status/query`），并可校验密钥 |
 | `POST /api/update/check` | 查询 GitHub 最新 Release 并与当前版本比较（只查不装） |
 
-计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Service`，指向同目录的 `UpDevice.Service.exe`。
+计划任务用 `schtasks` 创建：`/SC ONLOGON /RL HIGHEST`，任务名 `UpDevice.Tray`，指向同目录的 `UpDevice.Tray.exe`。
+老版本的 `UpDevice.Service` 任务（直接起主进程）会在托盘启动时被 `ScheduledTask.MigrateLegacy()` 删除并按新目标重建，
+避免升级后两个任务并存。
+
+为什么指向托盘：托盘是入口（图标 + 配置页），主进程是它拉起的后台进程。任务直接起主进程会出现「只有后台进程、没有托盘」的状态，
+用户看不到图标也没法用菜单退出。
 
 
 ## 构建与运行

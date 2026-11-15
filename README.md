@@ -40,7 +40,7 @@ Sleepy 的上报并不是真正意义上的上报，而是调用`/set`接口修�
 - 设备信息采集：前台窗口（`GetForegroundWindow` / `GetWindowThreadProcessId` / `GetClassNameW`）、空闲时间（`GetLastInputInfo`）、控制器（XInput `XInputGetState`）、电源（`GetSystemPowerStatus`）
 - 媒体信息：WinRT SMTC（`GlobalSystemMediaTransportControlsSessionManager`），需要 `net10.0-windows10.0.19041.0` 目标框架
 - 游戏遥测：ATS / ETS2 通过游戏内原生插件（C++ / 官方 SCS 遥测 SDK）写命名共享内存，主进程读取后按模板拼装
-- 启动方式：计划任务（登录触发）拉起主进程（待修复：无法拉起）
+- 启动方式：计划任务（登录触发）拉起托盘，主进程由托盘带起
 
 ## 代码签名 / Code signing policy
 

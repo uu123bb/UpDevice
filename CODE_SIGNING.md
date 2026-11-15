@@ -63,7 +63,7 @@
 | 生成配置文件 | `data/config.json`（或程序目录） | 首次运行 |
 | 运行日志 | `data/Logs/` | 运行时 |
 | 开机自启（托盘） | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | 你在设置页开启时 |
-| 登录时启动主进程 | 计划任务 `UpDevice`（`schtasks`，`ONLOGON` + `HIGHEST`） | 你启用「开机启动（任务计划）」时 |
+| 登录时启动托盘 | 计划任务 `UpDevice.Tray`（`schtasks`，`ONLOGON` + `HIGHEST`） | 你启用「开机启动（任务计划）」时 |
 | 遥测插件 | `<游戏目录>\bin\win_x64\plugins\UpDevice.Telemetry.dll` | 你在设置页点「安装」时 |
 
 程序不注册 Windows 服务，不写 `Program Files` 之外的系统目录，不安装驱动。
@@ -147,7 +147,7 @@ Everything is sent only to the Sleepy server you configure — never to the auth
 | config file | `data/config.json` | first run |
 | logs | `data/Logs/` | while running |
 | autostart (tray) | `HKCU\...\CurrentVersion\Run` | when you enable it |
-| main process at logon | scheduled task `UpDevice` (`schtasks`, `ONLOGON` + `HIGHEST`) | when you enable it |
+| tray at logon | scheduled task `UpDevice.Tray` (`schtasks`, `ONLOGON` + `HIGHEST`) | when you enable it |
 | telemetry plugin | `<game>\bin\win_x64\plugins\UpDevice.Telemetry.dll` | when you click Install |
 
 No Windows service, no drivers, nothing written outside the program directory and the locations above.
