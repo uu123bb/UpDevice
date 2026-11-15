@@ -300,7 +300,7 @@ ATS/ETS2 ──加载──▶ UpDevice.Telemetry.dll（游戏内插件，读 SC
 
 | 变量 | 数据来源 | 说明 |
 | --- | --- | --- |
-| `%game%` | `common.game_id` | `eurotrucks2` → Euro Truck Simulator 2，`amtrucks` → American Truck Simulator |
+| `%game%` | `common.game_id` | **`eut2`** → Euro Truck Simulator 2，**`ats`** → American Truck Simulator（官方常量是这两个，不是进程名） |
 | `%driver_status%` | job 配置有无货物 | 有货「工作中」，否则「自由如风」 |
 | `%driver_sleepy%` | `rest.stop` | 游戏内核分钟，负数表示已超时 → 「需要休息」 |
 | `%speed%` | `truck.speed` | m/s → kph / mph |

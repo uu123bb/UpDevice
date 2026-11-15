@@ -8,7 +8,7 @@ namespace UpDevice.Shared.Trucking;
 /// <param name="SteamAppId">Steam AppID，用于读 appmanifest / 判断是否装过。</param>
 /// <param name="InstallFolder">steamapps/common 下的目录名。</param>
 /// <param name="ProcessName">游戏进程名（小写，带 .exe），用于判断是否在前台。</param>
-/// <param name="TelemetryGameId">SDK 初始化参数里的 game_id。</param>
+/// <param name="TelemetryGameId">SDK 初始化参数里的 game_id（官方值是 eut2 / ats，不是进程名）。</param>
 /// <param name="TitleKeyword">窗口标题里的关键字。取不到进程名时靠它认游戏。</param>
 public sealed record TruckGameDefinition(
     string Id,
@@ -28,7 +28,7 @@ public static class TruckGames
         "270880",
         "American Truck Simulator",
         "ats.exe",
-        "amtrucks",
+        "ats",
         "American Truck Simulator");
 
     public static readonly TruckGameDefinition Ets2 = new(
@@ -37,7 +37,7 @@ public static class TruckGames
         "227300",
         "Euro Truck Simulator 2",
         "eurotrucks2.exe",
-        "eurotrucks2",
+        "eut2",
         "Euro Truck Simulator 2");
 
     /// <summary>设置页按这个顺序列出：先 ATS 后 ETS2。</summary>

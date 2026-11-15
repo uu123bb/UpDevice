@@ -282,29 +282,22 @@ public sealed class Reporter : IDisposable
     ///
     /// 三个条件缺一不可：全局开关打开、**前台就是游戏**、共享内存里的数据新鲜
     /// 且 game_id 与前台游戏一致（两个游戏同时开时不会串台）。
-    ///
-    /// 认游戏先看进程名，认不出来再看窗口标题 —— 游戏以管理员身份启动、或与主进程不在
-    /// 同一完整性级别时，取进程映像名会失败（进程名为空），只有标题还认得出来。
-    /// 三种失败原因都会各记一条日志，方便排查「为什么还是普通前台信息」。
+    /// 每种状态变化都会记一条 `[公路与车辆]` 日志，出问题能直接从日志看出卡在哪一步。
     /// </summary>
     private bool TryComposeTrucking(AppConfig config, out string text)
     {
         text = string.Empty;
 
-        if (!config.Trucking.Enabled)
-        {
-            return false;
-        }
-
         var info = _foreground.Current;
-        var game = TruckGames.MatchForeground(info.ProcessName, info.WindowTitle);
+        var game = ResolveForegroundGame(out var telemetry);
 
         if (game is null)
         {
             // 开关没开就不必打扰用户，功能关着时前台是谁都无所谓。
             if (config.Trucking.Enabled)
             {
-                WarnTrucking("not-game", $"前台不是受支持的游戏（进程=\"{info.ProcessName}\"，标题=\"{info.WindowTitle}\"）");
+                NoteTruckingState("not-game",
+                    $"前台不是受支持的游戏（进程=\"{info.ProcessName}\"，标题=\"{info.WindowTitle}\"，遥测={(telemetry is null ? "不可用" : $"可用({telemetry.GameId})")}）");
             }
 
             return false;
@@ -312,33 +305,63 @@ public sealed class Reporter : IDisposable
 
         if (!config.Trucking.Enabled)
         {
-            WarnTrucking("disabled", $"{game.DisplayName} 在前台，但「公路与车辆」开关是关闭的，仍上报普通前台信息");
+            NoteTruckingState("disabled", $"{game.DisplayName} 在前台，但「公路与车辆」开关是关闭的，仍上报普通前台信息");
             return false;
         }
 
-        if (!_trucking.TryRead(out var telemetry) || telemetry is null)
+        if (telemetry is null)
         {
-            WarnTrucking("no-telemetry",
+            NoteTruckingState("no-telemetry",
                 $"{game.DisplayName} 在前台，但读不到遥测共享内存：插件可能没装，或游戏启动时没加载它");
             return false;
         }
 
         if (!string.Equals(telemetry.GameId, game.TelemetryGameId, StringComparison.OrdinalIgnoreCase))
         {
-            WarnTrucking("mismatch", $"遥测里的游戏是 {telemetry.GameId}，与前台的 {game.TelemetryGameId} 不一致，本次忽略");
+            NoteTruckingState("mismatch",
+                $"遥测里的游戏是 {telemetry.GameId}，与前台的 {game.TelemetryGameId} 不一致，本次忽略");
             return false;
         }
 
         var smtc = _smtc.Current is { IsPlaying: true } playing ? FormatNowPlaying(playing) : null;
         text = TruckingFormat.Render(config.Trucking.Format, telemetry, smtc, config.Trucking.Imperial);
-
-        // 正常出文案就把告警清掉，下次再出问题还能再记一条。
-        _truckingWarnedKind = null;
+        NoteTruckingState("ok", $"{game.DisplayName} 遥测生效 → \"{text}\"");
         return text.Length > 0;
     }
 
-    /// <summary>按「原因类型」去重：同一种原因只在状态切换时记一条，避免切窗口把日志刷满。</summary>
-    private void WarnTrucking(string kind, string message)
+    /// <summary>
+    /// 把当前前台认成某个游戏，并顺手带出遥测快照。
+    ///
+    /// 先按进程名认；进程名认不出来时，**标题像该游戏 且 共享内存里正是该游戏的遥测**
+    /// 两个条件同时成立才认 —— 桌面上放个同名快捷方式不可能有新鲜遥测，
+    /// 全屏游戏（进程名取不到或取值异常）则能正常认出来。
+    /// </summary>
+    private TruckGameDefinition? ResolveForegroundGame(out TruckTelemetrySnapshot? telemetry)
+    {
+        telemetry = _trucking.TryRead(out var snapshot) ? snapshot : null;
+
+        var info = _foreground.Current;
+        var byProcess = TruckGames.FromProcess(info.ProcessName);
+        if (byProcess is not null)
+        {
+            return byProcess;
+        }
+
+        var byTitle = TruckGames.FromTitle(info.WindowTitle);
+        if (byTitle is not null && telemetry is not null
+            && string.Equals(telemetry.GameId, byTitle.TelemetryGameId, StringComparison.OrdinalIgnoreCase))
+        {
+            return byTitle;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 按状态类型去重记日志：每种状态（不是游戏 / 开关关着 / 遥测读不到 / 生效中）只在切换时记一条，
+    /// 切窗口不会刷屏，但状态变化一定看得到。
+    /// </summary>
+    private void NoteTruckingState(string kind, string message)
     {
         if (string.Equals(_truckingWarnedKind, kind, StringComparison.Ordinal))
         {
@@ -353,17 +376,17 @@ public sealed class Reporter : IDisposable
     public string DescribeTruckingState(AppConfig config)
     {
         var info = _foreground.Current;
-        var game = TruckGames.MatchForeground(info.ProcessName, info.WindowTitle);
-        var readable = _trucking.TryRead(out var telemetry) && telemetry is not null;
+        var game = ResolveForegroundGame(out var telemetry);
 
-        var telemetryText = readable
-            ? $"可用（{telemetry!.GameId}，{telemetry.AgeMs} ms 前写入）"
-            : "不可用（插件未加载 / 游戏未运行）";
+        var telemetryText = telemetry is null
+            ? "不可用（插件未加载 / 游戏未运行）"
+            : $"可用（{telemetry.GameId}，{telemetry.AgeMs} ms 前写入）";
 
         return $"开关={(config.Trucking.Enabled ? "开" : "关")}，"
             + $"前台=\"{info.ProcessName}\" 标题=\"{info.WindowTitle}\"，"
             + $"识别={(game?.DisplayName ?? "非游戏")}，遥测={telemetryText}";
     }
+
 
     /// <summary>供 --once 冒烟测试打印遥测状态。</summary>
     public string DescribeTelemetry()

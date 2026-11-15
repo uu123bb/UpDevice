@@ -25,6 +25,11 @@
 #include "common/scssdk_telemetry_trailer_common_channels.h"
 #include "common/scssdk_telemetry_truck_common_channels.h"
 
+// 游戏身份用官方常量（SCS_GAME_ID_EUT2 = "eut2"、SCS_GAME_ID_ATS = "ats"），
+// 别手写 "eurotrucks2" / "amtrucks" —— 那两个字符串不是 SDK 里的值。
+#include "amtrucks/scssdk_ats.h"
+#include "eurotrucks2/scssdk_eut2.h"
+
 // ---------------------------------------------------------------------------
 // 共享内存布局（与 C# 的 TruckTelemetryReader 逐字节对应）
 // ---------------------------------------------------------------------------
@@ -584,11 +589,11 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version,
     upd_reset_state();
 
     const scs_string_t game_id = parameters->common.game_id;
-    if (upd_streq(game_id, "eurotrucks2"))
+    if (upd_streq(game_id, SCS_GAME_ID_EUT2))
     {
         g_state.game = UPD_GAME_ETS2;
     }
-    else if (upd_streq(game_id, "amtrucks"))
+    else if (upd_streq(game_id, SCS_GAME_ID_ATS))
     {
         g_state.game = UPD_GAME_ATS;
     }
