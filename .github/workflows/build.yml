@@ -28,6 +28,8 @@ jobs:
   build:
     name: 构建并打包
     runs-on: windows-latest
+    # 兜底：签名那一步曾经因为弹窗挂死过，宁可整 job 失败也别挂着耗六小时
+    timeout-minutes: 30
     outputs:
       version: ${{ steps.ver.outputs.version }}
       release: ${{ steps.ver.outputs.release }}
@@ -40,6 +42,45 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # 遥测插件是原生 DLL，必须用 MSVC 编（游戏只加载 native plugin）。
+      # 产物放到 csproj 约定的位置，发布托盘时会被自动带进 app-*/Telemetry/。
+      - name: 编译遥测插件
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "找不到 vswhere.exe，无法定位 MSVC"
+          }
+
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) {
+            throw "找不到 MSVC C++ 工具链（需要 Microsoft.VisualStudio.Component.VC.Tools.x86.x64）"
+          }
+
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+
+          $outDir = "src/UpDevice.Telemetry.Plugin/bin/Release"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          # 导出靠 .def 文件：SDK 头文件里的声明是普通声明，函数上再加
+          # __declspec(dllexport) 会被 MSVC 判成 C2375（different linkage）。
+          cl /nologo /LD /O2 /DNDEBUG `
+            /I src/UpDevice.Telemetry.Plugin/include `
+            src/UpDevice.Telemetry.Plugin/plugin.cpp `
+            /Fe:$outDir/UpDevice.Telemetry.dll `
+            /Fo:$outDir/ `
+            /link /DEF:src/UpDevice.Telemetry.Plugin/UpDevice.Telemetry.def
+
+          $dll = Join-Path $outDir "UpDevice.Telemetry.dll"
+          if (-not (Test-Path $dll)) {
+            throw "遥测插件编译失败：$dll 未生成"
+          }
+
+          Write-Host "遥测插件已生成: $dll ($([Math]::Round((Get-Item $dll).Length / 1KB, 1)) KB)"
 
       - name: 计算版本号
         id: ver
@@ -129,13 +170,26 @@ jobs:
             throw "打包目录结构不正确：缺少 app-* 目录"
           }
 
+          $plugin = Join-Path $appDir.FullName "Telemetry\UpDevice.Telemetry.dll"
+          if (-not (Test-Path $plugin)) {
+            throw "程序目录里缺少 Telemetry/UpDevice.Telemetry.dll，遥测功能会不可用"
+          }
+
           $appExe = Get-ChildItem -Path $appDir.FullName -Filter *.exe | Select-Object -ExpandProperty Name
           Write-Host "程序目录: $($appDir.Name) → $($appExe -join ', ')"
           Write-Host ("产物体积: {0:N1} MB" -f ((Get-ChildItem publish -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 
       # 配置了证书才签名，没配置就跳过 —— 无签名的包也能跑，只是会弹「未知发布者」
+      # 签名这一步踩过两次坑，结构是刻意这么写的：
+      #   1. 不往 runner 的证书存储里装根证书 —— 写 Root 会弹系统确认框，非交互会话直接挂死；
+      #      装不装只影响「签名后链路校验的状态」，签名本身照样写进文件。
+      #   2. 每个文件的签名放进独立作业并限时 —— 时间戳是网络调用，卡住时不抛异常，只能靠超时兜底。
+      #   3. 签不上只警告不失败 —— 签名是可选增强，别因为时间戳服务器抽风就让整个发布挂掉。
       - name: 代码签名（可选）
         shell: pwsh
+        # 签名只是增强：万一驱动/证书存储那边卡住，限时失败也不能拖垮整包产物
+        timeout-minutes: 15
+        continue-on-error: true
         run: |
           $base64 = "${{ secrets.SIGNING_PFX_BASE64 }}"
           if ([string]::IsNullOrWhiteSpace($base64)) {
@@ -146,56 +200,87 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
 
+          # 密码与 pfx 路径用环境变量传给子作业：子进程会继承，不必出现在命令行里
+          $env:UPD_SIGN_PFX = $pfxPath
+          $env:UPD_SIGN_PW = "${{ secrets.SIGNING_PFX_PASSWORD }}"
+
           $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
             $pfxPath,
-            "${{ secrets.SIGNING_PFX_PASSWORD }}",
+            $env:UPD_SIGN_PW,
             [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
 
           Write-Host "使用证书: $($cert.Subject) ($($cert.Thumbprint))"
 
-          # runner 上没有这个自签名根，签名时链路校验会判「根证书不受信任」。
-          # 临时装进当前用户的信任存储（runner 是一次性的，不会残留）。
-          $cerPath = Join-Path $env:RUNNER_TEMP "codesign.cer"
-          [IO.File]::WriteAllBytes($cerPath, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-          foreach ($storeName in @("Root", "TrustedPublisher")) {
-            try {
-              $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-                $storeName, [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-              $store.Add($cert)
-              $store.Close()
-              Write-Host "已把证书装入 $storeName"
+          # 插件 DLL 一起签：它会被装进别人的游戏目录，带签名更容易被用户信任
+          $targets = @(Get-ChildItem -Path publish -Recurse -Filter *.exe |
+            Where-Object { $_.Name -like "UpDevice.*.exe" }) +
+            @(Get-ChildItem -Path publish -Recurse -Filter "UpDevice.Telemetry.dll")
+
+          $signScript = {
+            param([string]$Path, [string]$Timestamp)
+
+            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              $env:UPD_SIGN_PFX,
+              $env:UPD_SIGN_PW,
+              [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+
+            if ([string]::IsNullOrWhiteSpace($Timestamp)) {
+              Set-AuthenticodeSignature -FilePath $Path -Certificate $cert -HashAlgorithm SHA256
             }
-            catch {
-              Write-Host "装入 $storeName 失败（继续签名）: $($_.Exception.Message)" -ForegroundColor Yellow
+            else {
+              Set-AuthenticodeSignature -FilePath $Path -Certificate $cert -HashAlgorithm SHA256 -TimestampServer $Timestamp
             }
           }
 
-          $targets = Get-ChildItem -Path publish -Recurse -Filter *.exe |
-            Where-Object { $_.Name -like "UpDevice.*.exe" }
+          $unsigned = @()
 
           foreach ($target in $targets) {
-            try {
-              $result = Set-AuthenticodeSignature -FilePath $target.FullName -Certificate $cert `
-                -HashAlgorithm SHA256 -TimestampServer "http://timestamp.digicert.com"
+            $result = $null
+
+            foreach ($attempt in @(
+                @{ Label = "（带时间戳）"; Timestamp = "http://timestamp.digicert.com" },
+                @{ Label = "（不带时间戳）"; Timestamp = "" })) {
+
+              Write-Host ("签名 {0} {1}" -f $target.Name, $attempt.Label)
+
+              $job = Start-Job -ScriptBlock $signScript -ArgumentList $target.FullName, $attempt.Timestamp
+              if (Wait-Job $job -Timeout 60) {
+                try {
+                  $result = Receive-Job $job -ErrorAction Stop
+                }
+                catch {
+                  Write-Host ("  失败：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                  $result = $null
+                }
+              }
+              else {
+                Write-Host "  超时（60s），停掉重试" -ForegroundColor Yellow
+              }
+
+              Stop-Job $job -ErrorAction SilentlyContinue
+              Remove-Job $job -Force -ErrorAction SilentlyContinue
+
+              # 时间戳失败的兜底：不带时间戳的签名同样有效（证书过期后才失效）
+              if ($result -and $result.Status -ne "NotSigned") {
+                break
+              }
             }
-            catch {
-              # 时间戳服务器偶尔抽风，退化成不带时间戳签名（证书过期后签名才会失效）
-              Write-Host "时间戳失败，改为不带时间戳签名：$($_.Exception.Message)" -ForegroundColor Yellow
-              $result = Set-AuthenticodeSignature -FilePath $target.FullName -Certificate $cert -HashAlgorithm SHA256
+
+            if (-not $result -or $result.Status -eq "NotSigned") {
+              $unsigned += $target.Name
+              Write-Host ("{0} 没签上，继续" -f $target.Name) -ForegroundColor Yellow
+              continue
             }
 
             Write-Host ("{0} → {1}" -f $target.Name, $result.Status)
 
-            # UnknownError 通常就是「runner 上没装根证书」导致的链路校验失败，签名本身已经写进去了。
-            # 真正要拦的是根本没签上（NotSigned）。
-            if ($result.Status -eq "NotSigned") {
-              throw "签名失败: $($target.Name) ($($result.StatusMessage))"
-            }
-
             if ($result.Status -ne "Valid") {
-              Write-Host ("  链路校验未通过（{0}），签名已写入，用户机器安装了证书后即为 Valid" -f $result.StatusMessage) -ForegroundColor Yellow
+              Write-Host ("  链路校验未通过（{0}）：runner 上没有这个自签名根，签名已写入，用户装过证书即为 Valid" -f $result.StatusMessage) -ForegroundColor Yellow
             }
+          }
+
+          if ($unsigned.Count -gt 0) {
+            Write-Host ("以下文件没有签名：{0}" -f ($unsigned -join ", ")) -ForegroundColor Yellow
           }
 
       - name: 打包 ZIP

@@ -145,6 +145,45 @@
       font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s;
     }
     #toast.show { opacity: 1; }
+
+    /* 公路与车辆 */
+    .game {
+      padding: 12px 0;
+    }
+    .game + .game { border-top: 1px dashed var(--line); }
+    .game-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .game-name { font-weight: 600; }
+    .game-path {
+      color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 3px;
+      word-break: break-all; font-family: Consolas, "Courier New", monospace;
+    }
+    .game-path.missing { color: var(--warn); }
+    .game-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+    .game-tag {
+      display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+      border: 1px solid currentColor; color: var(--muted); margin-left: 6px;
+      vertical-align: middle; font-weight: 400;
+    }
+    .game-tag.ok { color: var(--ok); }
+    .game-tag.warn { color: var(--warn); }
+
+    .preview {
+      margin: 10px 0 4px; padding: 10px 12px; border-radius: 8px;
+      background: var(--bg); border: 1px dashed var(--line);
+      font-size: 13px; word-break: break-all; min-height: 38px;
+    }
+    .preview.empty { color: var(--muted); }
+
+    .vars { margin-top: 12px; }
+    .vars table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .vars th, .vars td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .vars th { color: var(--muted); font-weight: 600; }
+    .vars code {
+      font-family: Consolas, "Courier New", monospace;
+      background: var(--accent-soft); color: var(--accent);
+      padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+    }
+    .vars td.explain { color: var(--muted); }
   </style>
 </head>
 
@@ -157,6 +196,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="config">配置</button>
+      <button class="tab" data-tab="trucking">公路与车辆（Roads &amp; Vehicles）</button>
       <button class="tab" data-tab="update">自动更新</button>
     </div>
 
@@ -297,6 +337,60 @@
     </div>
     </section>
 
+    <section id="tab-trucking" hidden>
+      <div class="card">
+        <h2>全局开关</h2>
+        <div class="row">
+          <div class="label">公路与车辆<small>开启后，ATS / ETS2 在前台运行时用下面的模板内容替代窗口标题</small></div>
+          <div class="control">
+            <label class="switch"><input id="truckingEnabled" type="checkbox" /><span></span></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>遥测插件管理</h2>
+        <div id="truckGameList">
+          <div class="hint">正在检测 Steam 安装目录…</div>
+        </div>
+        <div class="hint" id="truckPluginHint" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h2>要上报的信息</h2>
+        <div class="row">
+          <div class="label">上报格式<small>用 %变量% 拼装，%% 输出一个百分号</small></div>
+          <div class="control"><input id="truckFormat" type="text" /></div>
+        </div>
+        <div class="row">
+          <div class="label">单位<small>影响车速与距离的显示单位</small></div>
+          <div class="control">
+            <select id="truckImperial">
+              <option value="false">公制（kph / km）</option>
+              <option value="true">英制（mph / mi）</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">格式预览</div>
+          <div class="control">
+            <span class="hint" id="truckPreviewHint"></span>
+            <button id="btnTruckPreview">刷新预览</button>
+          </div>
+        </div>
+        <div class="preview empty" id="truckPreview">点「刷新预览」查看效果</div>
+
+        <div class="vars">
+          <table>
+            <thead>
+              <tr><th style="width:34%">变量</th><th style="width:22%">含义</th><th>输出示例</th></tr>
+            </thead>
+            <tbody id="truckVars"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-update" hidden>
       <div class="card">
         <h2>自动更新</h2>
@@ -409,6 +503,11 @@
       el("textBatteryOnBattery").value = cfg.texts.batteryOnBattery || "";
       el("textBatteryOnAc").value = cfg.texts.batteryOnAc || "";
 
+      const trucking = cfg.trucking || {};
+      setChecked(el("truckingEnabled"), trucking.enabled);
+      el("truckFormat").value = trucking.format || "";
+      el("truckImperial").value = trucking.imperial ? "true" : "false";
+
       el("updateEnabled").checked = cfg.update ? cfg.update.enabled : true;
       el("updateIntervalHours").value = cfg.update ? cfg.update.intervalHours : 6;
       el("updateRepository").textContent = (cfg.update && cfg.update.repository) || "-";
@@ -467,6 +566,12 @@
           deviceId: el("smtcDeviceId").value.trim(),
           showName: el("smtcShowName").value.trim(),
         },
+        trucking: {
+          enabled: el("truckingEnabled").checked,
+          format: el("truckFormat").value,
+          imperial: el("truckImperial").value === "true",
+          games: (config && config.trucking && config.trucking.games) || [],
+        },
         update: {
           enabled: el("updateEnabled").checked,
           intervalHours: Number(el("updateIntervalHours").value) || 6,
@@ -479,6 +584,7 @@
       const [state, cfg] = await Promise.all([api("/api/state"), api("/api/config")]);
       renderState(state);
       renderConfig(cfg);
+      await refreshTrucking();
     }
 
     el("controllerEnabled").addEventListener("change", applyDependencies);
@@ -492,6 +598,7 @@
         tab.classList.add("active");
         const name = tab.dataset.tab;
         el("tab-config").hidden = name !== "config";
+        el("tab-trucking").hidden = name !== "trucking";
         el("tab-update").hidden = name !== "update";
       });
     });
@@ -605,6 +712,164 @@
       toast(result.message || "已切换");
       await refresh();
     });
+
+    // ---------- 公路与车辆（Roads & Vehicles） ----------
+
+    let truckState = null;
+
+    function renderTruckGames(state) {
+      truckState = state;
+      const list = el("truckGameList");
+      const games = state.games || [];
+
+      if (games.length === 0) {
+        list.innerHTML = '<div class="hint">没有可用的游戏信息</div>';
+        return;
+      }
+
+      list.innerHTML = games.map((game) => {
+        const tag = game.installed
+          ? '<span class="game-tag ok">已安装</span>'
+          : (game.path ? '<span class="game-tag warn">未安装</span>' : '<span class="game-tag">未找到路径</span>');
+        const source = game.source === "steam" ? "Steam" : (game.source === "custom" ? "自定义路径" : "");
+        const path = game.path
+          ? `<div class="game-path">${game.path}${source ? `　·　${source}` : ""}</div>`
+          : `<div class="game-path missing">${game.message || "未找到安装目录"}</div>`;
+        const actions = game.installed
+          ? `<button data-act="uninstall" data-id="${game.id}">卸载</button>`
+          : `<button data-act="path" data-id="${game.id}">自定义路径</button>`
+            + `<button class="primary" data-act="install" data-id="${game.id}">安装</button>`;
+
+        return `<div class="game">
+          <div class="game-head">
+            <div>
+              <div class="game-name">${game.displayName}${tag}</div>
+              ${path}
+            </div>
+            <div class="game-actions">${actions}</div>
+          </div>
+        </div>`;
+      }).join("");
+
+      list.querySelectorAll("button[data-act]").forEach((button) => {
+        button.addEventListener("click", () => onTruckAction(button.dataset.act, button.dataset.id));
+      });
+
+      el("truckPluginHint").textContent = state.pluginAvailable
+        ? `插件已随程序就绪（${state.pluginFileName}），安装目标为游戏的 bin\\win_x64\\plugins 目录`
+        : "当前程序包里没有插件文件（开发环境需先编译插件），安装会失败";
+    }
+
+    function renderTruckVars(variables) {
+      el("truckVars").innerHTML = (variables || []).map((variable) => {
+        const alias = (variable.aliases && variable.aliases.length)
+          ? `<div class="hint">兼容写法：${variable.aliases.map((a) => `<code>%${a}%</code>`).join(" ")}</div>`
+          : "";
+        return `<tr>
+          <td><code>%${variable.name}%</code>${alias}</td>
+          <td>${variable.label}</td>
+          <td class="explain">${variable.explain}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function refreshTrucking() {
+      try {
+        const state = await api("/api/trucking");
+        renderTruckGames(state);
+        renderTruckVars(state.variables);
+      } catch (error) {
+        el("truckGameList").innerHTML = `<div class="hint">读取遥测状态失败：${error.message}</div>`;
+      }
+    }
+
+    async function postTrucking(path, body) {
+      return api(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    // 安装/改路径走的是独立接口，会把最新的 games 写在 state 里。
+    // 这里同步回内存中的 config，避免随后的「保存」用旧值覆盖刚写下的自定义路径。
+    function syncTruckingPaths(state) {
+      if (!config) {
+        return;
+      }
+
+      config.trucking = config.trucking || {};
+      config.trucking.games = (state.games || [])
+        .filter((game) => game.source === "custom" && game.path)
+        .map((game) => ({ id: game.id, path: game.path }));
+    }
+
+    async function onTruckAction(action, id) {
+      const game = ((truckState && truckState.games) || []).find((item) => item.id === id);
+      if (!game) {
+        return;
+      }
+
+      if (action === "path") {
+        const input = prompt(`输入 ${game.displayName} 的安装目录\n（选到游戏根目录，里面有 bin 文件夹；留空恢复自动探测）`, game.path || "");
+        if (input === null) {
+          return;
+        }
+
+        const result = await postTrucking("/api/trucking/path", { id, path: input });
+        toast(result.message || "已保存");
+        if (result.ok && result.state) {
+          renderTruckGames(result.state);
+          syncTruckingPaths(result.state);
+        }
+        return;
+      }
+
+      if (action === "install") {
+        if (!game.path) {
+          toast("还没有可用的游戏目录，请先指定路径");
+          return;
+        }
+
+        if (!confirm(`把遥测插件安装到：\n${game.path}\n\n游戏正在运行时会失败，请先退出游戏。继续？`)) {
+          return;
+        }
+
+        const result = await postTrucking("/api/trucking/install", { id });
+        toast(result.message || "已安装");
+        if (result.state) {
+          renderTruckGames(result.state);
+          syncTruckingPaths(result.state);
+        }
+        return;
+      }
+
+      if (action === "uninstall") {
+        if (!confirm(`从游戏目录卸载遥测插件？\n${game.path || ""}`)) {
+          return;
+        }
+
+        const result = await postTrucking("/api/trucking/uninstall", { id });
+        toast(result.message || "已卸载");
+        if (result.state) {
+          renderTruckGames(result.state);
+        }
+      }
+    }
+
+    async function previewTrucking() {
+      const result = await postTrucking("/api/trucking/preview", {
+        format: el("truckFormat").value,
+        imperial: el("truckImperial").value === "true",
+      });
+
+      const box = el("truckPreview");
+      box.textContent = result.text || "（空）";
+      box.classList.toggle("empty", !result.text);
+      el("truckPreviewHint").textContent = result.hint || "";
+    }
+
+    el("btnTruckPreview").addEventListener("click", () => previewTrucking().catch((error) => toast("预览失败：" + error.message)));
 
     refresh().catch((error) => toast("加载配置失败：" + error.message));
   </script>

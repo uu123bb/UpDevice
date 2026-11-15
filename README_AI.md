@@ -19,6 +19,7 @@ UpDevice 就是这个推送端在 Windows 上的实现 —— 后台采集本机
 | `UpDevice.Launcher` | 启动器 | 无窗口入口：拉起托盘；被调用时替换 `UpDevice/` 目录完成更新 |
 | `UpDevice.Service` | 主进程 | 采集前台窗口与应用信息，判断设备使用状态，按间隔调用 sleepy API 上报；承载全部核心逻辑 |
 | `UpDevice.Tray` | 托盘程序 | 常驻托盘，并在本机起一个 Web 服务提供配置界面；控制主进程启停、展示上报状态 |
+| `UpDevice.Telemetry.Plugin` | 游戏内插件 | 原生 DLL，被 ATS/ETS2 加载后把遥测写进共享内存；由托盘按需安装到游戏目录 |
 
 两个进程分离的原因：采集与上报需要长期驻留，配置与状态查看需要交互入口。托盘程序不承担采集逻辑，只做控制面。
 
@@ -267,6 +268,66 @@ Windows 的前台窗口不一定代表「用户在用什么」，判定分四档
   `smtc.pendingRemoveId`，由主进程调用 `device/remove` 删除，**删除成功才清除标记** ——
   因此主进程当时没运行也没关系，下次启动会补删。
 
+### 公路与车辆（ATS / ETS2 遥测）
+
+设置页的第三个选项卡，`trucking` 节点（配置 v4 新增）。**只在游戏位于前台时**才把上报文案换成模板输出，其余时刻完全不影响原有逻辑。
+
+链路：
+
+```
+ATS/ETS2 ──加载──▶ UpDevice.Telemetry.dll（游戏内插件，读 SCS 遥测 SDK）
+                            │ 写命名共享内存 Local\UpDeviceTruckTelemetry
+                            ▼
+                 UpDevice.Service（TruckTelemetryReader 读 + 模板渲染）
+                            │
+                            ▼
+                        sleepy 设备文案
+```
+
+**为什么要有原生插件**：SCS 的遥测只能通过游戏加载的原生 DLL 拿到，没有进程外接口。插件用官方 SDK 头文件（`src/UpDevice.Telemetry.Plugin/include/`）编译，只导出 `scs_telemetry_init` / `scs_telemetry_shutdown`，注册约 24 个通道后把一帧数据写进共享内存。
+
+插件侧的三条硬约束（改代码时别破坏）：
+
+- **不用 STL、不分配堆、不抛异常、不开线程、不写日志** —— 它活在别人的游戏进程里，崩了就是游戏崩了。
+- **不依赖 C 运行时**（连 `memcpy`/`strlen` 都自己写），MinGW 与 MSVC 编出来都能用。
+- **共享内存布局是两边约定死的**：`#pragma pack(push,1)` 的 320 字节结构体，C# 侧按手写偏移读（`TruckTelemetryReader`）。改动任何字段都要同步改两边并升 `UPD_LAYOUT_VERSION`。插件内部有编译期 `offsetof` 断言，位移错了直接编译失败。
+
+写入用 **seqlock**：写入前把 `sequence` 改成奇数，写完再 +1 变偶数；读取端发现编号是奇数或前后不一致就丢弃这一帧。这样不需要锁也不会读到撕裂的半帧数据。`updated_ms` 记录写入时刻，超过 3 秒没更新就认为游戏已退出。
+
+通道 → 变量的对应：
+
+| 变量 | 数据来源 | 说明 |
+| --- | --- | --- |
+| `%game%` | `common.game_id` | `eurotrucks2` → Euro Truck Simulator 2，`amtrucks` → American Truck Simulator |
+| `%driver_status%` | job 配置有无货物 | 有货「工作中」，否则「自由如风」 |
+| `%driver_sleepy%` | `rest.stop` | 游戏内核分钟，负数表示已超时 → 「需要休息」 |
+| `%speed%` | `truck.speed` | m/s → kph / mph |
+| `%fuel_left%` | `truck.fuel.amount` ÷ `fuel.capacity` | 上限取 truck 配置 |
+| `%fuel_distance%` | `truck.fuel.range` | SDK 直接给公里 |
+| `%damage_vehicle%` | `truck.wear.*` 取最大值 | 玩家关心最坏的那个部件，不是平均值 |
+| `%damage_trailer%` | `trailer.wear.*` 取最大值 | |
+| `%damage_cargo%` | `job.cargo.damage` / `trailer.cargo.damage` | |
+| `%job_cargo%` | job 配置 `cargo` + `cargo.mass` | |
+| `%job_lefttime%` | **SDK 不提供任务截止时间** | 恒为「任务剩余 --」，留了字段等官方补 |
+| `%job_destination%` | job 配置 `destination.city` / `destination.company` | 渲染成「城市 - 货场」 |
+| `%nav_speed_limit%` | `truck.navigation.speed.limit` | |
+| `%nav_leftdistance%` / `%nav_lefttime%` | `truck.navigation.distance` / `.time` | 米、秒 |
+| `%nav_eta%` | `game.time` + `navigation.time` | 用**游戏内时钟**算，与仪表盘一致 |
+| `%smtc%` | 主进程的 SmtcMonitor | 没有播放时输出「无播放」 |
+
+`%%` 输出一个百分号；认不出的变量原样保留，方便一眼看出拼错。需求原文里的 `%dirver_status%`（拼写错误）作为兼容别名保留。
+
+插件管理：
+
+- 自动探测：注册表 `SteamPath` / `InstallPath` → `steamapps/libraryfolders.vdf` 里的所有库 → `steamapps/common/<游戏目录名>`。
+- 「自定义路径」写进 `trucking.games[].path`，允许直接选到 `bin` 或 `bin\win_x64`，会自动回退到游戏根目录。
+- 「安装」= 把随程序分发的 `Telemetry/UpDevice.Telemetry.dll` 复制到 `<游戏>/bin/win_x64/plugins/`；「卸载」= 删掉它。游戏运行时 DLL 被占用，会提示先退出游戏。
+
+**已知限制**
+
+- 只支持 64 位游戏（`bin/win_x64`），32 位老版本没有对应插件。
+- 自签名证书换不来 SmartScreen 信誉；未签名的本地构建会被应用控制策略拦（见「代码签名」一节）。
+
 ### 配置文件由程序自举
 
 `config.json` 不需要预置，也不由安装程序生成 —— **两个程序都遵循同一规则**：启动或读取配置时如果文件不存在（或不可读、解析失败），就按默认值创建一份再继续。
@@ -284,6 +345,7 @@ UpDevice/
 ├── src/
 │   ├── UpDevice.Shared/           # 三个程序共用的部分
 │   │   ├── Config/                # AppConfig、ConfigStore（自举 + 版本迁移 + 热重载）
+│   │   ├── Trucking/              # ATS/ETS2 遥测：共享内存读取、模板引擎、游戏定义
 │   │   ├── AppPaths.cs            # 目录布局：app-* 版本目录与 data 数据目录
 │   │   ├── AppVersion.cs          # 版本号（取自目录名）
 │   │   ├── UpdateChecker.cs       # GitHub Release 检查
@@ -304,8 +366,12 @@ UpDevice/
 │       ├── TrayWebHost.cs         # 回环 Web 服务与接口
 │       ├── Autostart.cs           # 托盘开机自启（Run 键）
 │       ├── ScheduledTask.cs       # 主进程计划任务（schtasks）
+│       ├── Trucking/              # Steam 路径探测、插件安装 / 卸载
 │       ├── Web/index.html         # 配置页
 │       └── app.manifest           # requireAdministrator
+│   ├── UpDevice.Telemetry.Plugin/ # 游戏内原生插件（C++，CI 用 MSVC 编译）
+│       ├── plugin.cpp             # scs_telemetry_init / shutdown，写共享内存
+│       └── include/               # 官方 SCS 遥测 SDK 头文件
 │   └── UpDevice.Launcher/         # 启动器（无窗口入口）
 │       ├── Program.cs             # 无参数启动托盘 / --apply-update 替换目录
 │       ├── Updater.cs             # 起最新版本、解压新版本目录、清理旧目录
