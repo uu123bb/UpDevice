@@ -129,6 +129,10 @@ internal sealed class TrayWebHost
             }
 
             ScheduleSmtcRemoval(previous, incoming);
+
+            // 设置页提交的是整份配置，但不带 version 字段；不补上的话每存一次都会写成 0，
+            // 下次启动又当成老配置重跑一遍迁移。
+            incoming.Version = AppConfig.CurrentVersion;
             _store.Save(incoming);
 
             var notified = Ipc.SendCommand("reload");

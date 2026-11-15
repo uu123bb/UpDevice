@@ -100,6 +100,7 @@ internal static class Program
         Logging.Info($"电池: {(battery.IsAvailable ? battery.Format(config.Texts) : "不可用")}");
         Logging.Info($"SMTC: {(smtc.Current is { } playing ? $"{playing.Source} - {playing.Title}" : "无")}");
         Logging.Info($"遥测: {reporter.DescribeTelemetry()}");
+        Logging.Info($"公路与车辆: {reporter.DescribeTruckingState(config)}");
         Logging.Info($"待上报: using={usingFlag} status=\"{status}\"");
         return 0;
     }

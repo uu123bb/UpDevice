@@ -251,12 +251,13 @@ public sealed class TruckTelemetryReader : IDisposable
         };
     }
 
+    /// <summary>插件写的是枚举（1=ETS2，2=ATS），这里映射回官方 game_id，避免两边各写一份字符串。</summary>
     private static string ReadGameId(uint value)
     {
         return value switch
         {
-            1 => "eurotrucks2",
-            2 => "amtrucks",
+            1 => TruckGames.Ets2.TelemetryGameId,
+            2 => TruckGames.Ats.TelemetryGameId,
             _ => string.Empty,
         };
     }

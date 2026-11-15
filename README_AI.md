@@ -90,6 +90,8 @@ WinForms 实现，只有托盘图标与菜单（启停采集、打开配置页�
 
 要求管理员权限：写入程序目录以及拉起同样提权的托盘都需要，一次 UAC 之后不再弹。
 
+**前台判定**：先按进程名认（`ats.exe` / `eurotrucks2.exe`），**只有在进程名完全取不到时**才退回窗口标题匹配。进程名为空的典型场景是游戏以管理员身份启动、主进程没有权限读它的映像名；标题兜底必须收紧，否则桌面上一个叫「Euro Truck Simulator 2」的快捷方式也会被当成游戏。三种失败原因（不是游戏、开关关着、遥测读不到）各记一条 `[公路与车辆]` 日志，方便定位「为什么还是普通前台信息」。
+
 **已知限制**：启动器自身不参与自动更新 —— 更新包里虽然带着新的启动器，但只取其中的 `app-*` 目录，启动器本身只有手动替换才会升级。
 
 ## 与 sleepy 服务端的对接
@@ -298,7 +300,7 @@ ATS/ETS2 ──加载──▶ UpDevice.Telemetry.dll（游戏内插件，读 SC
 
 | 变量 | 数据来源 | 说明 |
 | --- | --- | --- |
-| `%game%` | `common.game_id` | `eurotrucks2` → Euro Truck Simulator 2，`amtrucks` → American Truck Simulator |
+| `%game%` | `common.game_id` | **`eut2`** → Euro Truck Simulator 2，**`ats`** → American Truck Simulator（官方常量是这两个，不是进程名） |
 | `%driver_status%` | job 配置有无货物 | 有货「工作中」，否则「自由如风」 |
 | `%driver_sleepy%` | `rest.stop` | 游戏内核分钟，负数表示已超时 → 「需要休息」 |
 | `%speed%` | `truck.speed` | m/s → kph / mph |
@@ -322,6 +324,8 @@ ATS/ETS2 ──加载──▶ UpDevice.Telemetry.dll（游戏内插件，读 SC
 - 自动探测：注册表 `SteamPath` / `InstallPath` → `steamapps/libraryfolders.vdf` 里的所有库 → `steamapps/common/<游戏目录名>`。
 - 「自定义路径」写进 `trucking.games[].path`，允许直接选到 `bin` 或 `bin\win_x64`，会自动回退到游戏根目录。
 - 「安装」= 把随程序分发的 `Telemetry/UpDevice.Telemetry.dll` 复制到 `<游戏>/bin/win_x64/plugins/`；「卸载」= 删掉它。游戏运行时 DLL 被占用，会提示先退出游戏。
+
+**前台判定**：先按进程名认（`ats.exe` / `eurotrucks2.exe`），**只有在进程名完全取不到时**才退回窗口标题匹配。进程名为空的典型场景是游戏以管理员身份启动、主进程没有权限读它的映像名；标题兜底必须收紧，否则桌面上一个叫「Euro Truck Simulator 2」的快捷方式也会被当成游戏。三种失败原因（不是游戏、开关关着、遥测读不到）各记一条 `[公路与车辆]` 日志，方便定位「为什么还是普通前台信息」。
 
 **已知限制**
 
