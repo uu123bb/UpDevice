@@ -89,6 +89,13 @@ public sealed class ConfigStore : IDisposable
             Logging.Info("config.json 从 v2 升级到 v3（新增自动更新配置）");
         }
 
+        if (version < 4)
+        {
+            // v3 → v4：新增 trucking 节点（ATS/ETS2 遥测上报），默认关闭
+            config.Trucking ??= new TruckingConfig();
+            Logging.Info("config.json 从 v3 升级到 v4（新增公路与车辆遥测配置）");
+        }
+
         config.Version = AppConfig.CurrentVersion;
         config.Normalize();
 

@@ -6,7 +6,7 @@ namespace UpDevice.Shared.Config;
 public sealed class AppConfig
 {
     /// <summary>当前配置结构版本。加字段或改语义时 +1，并在 ConfigStore 里补迁移。</summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>
     /// 配置结构版本。**默认 0 表示「未标注版本」**（v1 时代写的文件没有这个字段），
@@ -28,6 +28,9 @@ public sealed class AppConfig
     /// <summary>自动更新设置（v3 新增）。</summary>
     public UpdateConfig Update { get; set; } = new();
 
+    /// <summary>公路与车辆（ATS/ETS2 遥测上报）设置（v4 新增）。</summary>
+    public TruckingConfig Trucking { get; set; } = new();
+
     public TextConfig Texts { get; set; } = new();
 
     /// <summary>把越界值收敛到合理范围，避免手改配置把程序搞挂。</summary>
@@ -37,7 +40,10 @@ public sealed class AppConfig
         Remote ??= new RemoteConfig();
         Smtc ??= new SmtcConfig();
         Update ??= new UpdateConfig();
+        Trucking ??= new TruckingConfig();
         Texts ??= new TextConfig();
+
+        Trucking.Normalize();
 
         Remote.ServerUrl = (Remote.ServerUrl ?? string.Empty).Trim();
         Remote.Secret = Remote.Secret ?? string.Empty;

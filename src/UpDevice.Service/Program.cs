@@ -99,6 +99,7 @@ internal static class Program
         Logging.Info($"空闲时长: {activity.IdleSeconds(config.Report.ControllerEnabled):F0}s (阈值 {config.Report.IdleTimeoutSeconds}s)");
         Logging.Info($"电池: {(battery.IsAvailable ? battery.Format(config.Texts) : "不可用")}");
         Logging.Info($"SMTC: {(smtc.Current is { } playing ? $"{playing.Source} - {playing.Title}" : "无")}");
+        Logging.Info($"遥测: {reporter.DescribeTelemetry()}");
         Logging.Info($"待上报: using={usingFlag} status=\"{status}\"");
         return 0;
     }
