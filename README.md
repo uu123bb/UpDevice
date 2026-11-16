@@ -13,4 +13,7 @@ Switch to English (Not complete)
 - 支持欧卡2/美卡的遥测数据上报
 - 支持自动更新（通过 GitHub Release）
 
-## 快速开始 / Quick start
+## 快速开始 / Quick Start
+
+## 应用签名 / Application Signing
+项目后期将使用 SignPath Foundation 提供的签名证书为主程序签名，具体可查看 [CODE_SIGNING](/CODE_SIGNING.md)
