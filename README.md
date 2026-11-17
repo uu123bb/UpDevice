@@ -1,7 +1,7 @@
 # UpDevice
 
 ## 这是什么？ / What is this?
-Switch to English (Not complete)
+[Switch to English (Not complete)](/README_EN.md)
 
 **UpDevice** 是一个能获取设备当前前台信息，并将这些信息转发到用户所指定的 **Sleepy** 实例
 
